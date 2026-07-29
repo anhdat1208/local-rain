@@ -45,7 +45,8 @@ const sheetSubtitle = computed(() => {
   if (pickMode.value) return t("sheet.tapMap");
   if (store.loading) return t("sheet.locating");
   if (nearestStore.loading) return t("sheet.findingRain");
-  if (nearestStore.hasRain) return nearestStore.explanation;
+  // RainCard already shows explanation — keep sheet subtitle free of that copy
+  if (nearestStore.hasRain) return "";
   if (store.source === "manual") return t("sheet.pinned");
   if (radarStore.error) return radarStore.error;
   if (nearestStore.error) return nearestStore.error;
