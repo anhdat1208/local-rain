@@ -79,7 +79,7 @@ class CloudsService:
             "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
             f"{layer_id}/default/{timestamp}/{matrix}/{{z}}/{{y}}/{{x}}.png"
         )
-        public_base = get_settings().public_api_base.rstrip("/")
+        public_base = get_settings().resolved_public_api_base
         # Cache-bust query so browsers / SW don't keep an older soft-tile recipe
         tile_url_template = f"{public_base}/api/clouds/tiles/{{z}}/{{x}}/{{y}}.png?v=19"
         response = CloudsResponse(
