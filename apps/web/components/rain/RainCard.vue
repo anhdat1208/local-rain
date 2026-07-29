@@ -18,6 +18,9 @@ const props = withDefaults(
     rainChancePct?: number;
     rainIn1h?: boolean;
     rainIn2h?: boolean;
+    rainingHere?: boolean;
+    radarTimestamp?: string | null;
+    radarAgeMinutes?: number;
   }>(),
   {
     loading: false,
@@ -35,6 +38,9 @@ const props = withDefaults(
     rainChancePct: 0,
     rainIn1h: false,
     rainIn2h: false,
+    rainingHere: false,
+    radarTimestamp: null,
+    radarAgeMinutes: 0,
   },
 );
 
@@ -49,16 +55,31 @@ const chanceLabel = computed(() => {
   const key = `rain.chance.${props.rainChance || "none"}`;
   return t(key);
 });
+
+const radarClock = computed(() => {
+  if (!props.radarTimestamp) return null;
+  const date = new Date(props.radarTimestamp);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+});
+
+const headlineValue = computed(() => {
+  if (!props.hasRain) return t("rain.noneNearby");
+  if (props.rainingHere) return t("rain.hereValue");
+  return props.distanceLabel;
+});
 </script>
 
 <template>
   <div class="rounded-2xl bg-surface-muted px-3 py-3 transition-colors dark:bg-slate-800/80">
     <div class="flex items-start justify-between gap-3">
       <div>
-        <p class="text-xs font-medium text-slate-500 dark:text-slate-300">{{ t("rain.title") }}</p>
+        <p class="text-xs font-medium text-slate-500 dark:text-slate-300">
+          {{ rainingHere ? t("rain.titleHere") : t("rain.title") }}
+        </p>
         <div v-if="loading" class="mt-2 h-8 w-28 rounded-xl lr-skeleton" />
         <p v-else class="mt-1 text-2xl font-semibold tracking-tight text-slate-900">
-          {{ hasRain ? distanceLabel : t("rain.noneNearby") }}
+          {{ headlineValue }}
         </p>
       </div>
       <div
@@ -66,12 +87,15 @@ const chanceLabel = computed(() => {
         :class="
           !hasRain
             ? 'bg-slate-200 text-slate-500'
-            : approaching
-              ? 'bg-warning/15 text-warning'
-              : 'bg-rain/15 text-rain'
+            : rainingHere
+              ? 'bg-rose-500/15 text-rose-600'
+              : approaching
+                ? 'bg-warning/15 text-warning'
+                : 'bg-rain/15 text-rain'
         "
       >
         <template v-if="!hasRain">{{ t("rain.clear") }}</template>
+        <template v-else-if="rainingHere">{{ t("rain.here") }}</template>
         <template v-else-if="approaching">{{ t("rain.approaching") }}</template>
         <template v-else>{{ t("rain.nearby") }}</template>
       </div>
@@ -88,9 +112,11 @@ const chanceLabel = computed(() => {
       :class="
         !hasRain
           ? 'bg-emerald-50 text-emerald-800'
-          : approaching
-            ? 'bg-amber-50 text-amber-900'
-            : 'bg-sky-50 text-sky-900'
+          : rainingHere
+            ? 'bg-rose-50 text-rose-900'
+            : approaching
+              ? 'bg-amber-50 text-amber-900'
+              : 'bg-sky-50 text-sky-900'
       "
     >
       <div class="flex items-center justify-between gap-2">
@@ -146,5 +172,12 @@ const chanceLabel = computed(() => {
       <span>{{ t("rain.confidence") }}</span>
       <span class="font-medium tabular-nums text-slate-700 dark:text-slate-100">{{ confidence }}%</span>
     </div>
+
+    <p
+      v-if="!loading && radarClock"
+      class="mt-2 text-[11px] tabular-nums text-slate-400 dark:text-slate-400"
+    >
+      {{ t("rain.radarAge", { time: radarClock, minutes: radarAgeMinutes }) }}
+    </p>
   </div>
 </template>

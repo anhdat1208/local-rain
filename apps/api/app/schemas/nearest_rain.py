@@ -23,6 +23,9 @@ class NearestRainResponse(BaseModel):
     rain_chance_pct: int = Field(default=0, alias="rainChancePct", ge=0, le=100)
     rain_in_1h: bool = Field(default=False, alias="rainIn1h")
     rain_in_2h: bool = Field(default=False, alias="rainIn2h")
+    raining_here: bool = Field(default=False, alias="rainingHere")
+    radar_timestamp: str | None = Field(default=None, alias="radarTimestamp")
+    radar_age_minutes: int = Field(default=0, alias="radarAgeMinutes", ge=0)
 
 
 class RainVectorItem(BaseModel):

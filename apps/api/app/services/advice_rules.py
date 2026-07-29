@@ -19,6 +19,10 @@ class AdviceResult:
     rain_in_2h: bool
 
 
+# Radar resolution ~1 km/px at analysis zoom, so "here" includes nearby cell centres
+RAINING_HERE_M = 4_000
+
+
 _DIR_VI: dict[str, str] = {
     "N": "Bắc",
     "NE": "Đông Bắc",
@@ -58,9 +62,9 @@ def estimate_rain_chance(
 
     score = 18.0
     if distance_m <= 250:
-        score += 55
-    elif distance_m <= 1500:
-        score += 40
+        score += 62
+    elif distance_m <= RAINING_HERE_M:
+        score += 52
     elif distance_m <= 4000:
         score += 28
     elif distance_m <= 10000:
@@ -120,7 +124,7 @@ def _horizon_rain_flags(
 ) -> tuple[bool, bool]:
     if not has_rain:
         return False, False
-    if distance_m <= 1500:
+    if distance_m <= RAINING_HERE_M:
         return True, True
     if approaching and eta_minutes > 0:
         return (eta_minutes <= 60, eta_minutes <= 120)
@@ -197,16 +201,25 @@ def build_advice(
             rain_in_2h=rain_in_2h,
         )
 
-    if distance_m <= 250:
+    if distance_m <= RAINING_HERE_M:
+        overhead = distance_m <= 800
         if lang == "vi":
-            return pack(
-                f"Mưa rất gần — khoảng {distance_text} hướng {dir_text}.",
-                "Nên trú mưa hoặc mang ô ngay.",
+            if overhead:
+                explanation = "Đang mưa tại chỗ — ô mưa ngay trên đầu bạn."
+            else:
+                explanation = (
+                    f"Đang mưa tại chỗ — tâm echo radar cách ~{distance_text} "
+                    "(độ phân giải ~1 km, mưa có thể đang trên đầu dù tâm lệch)."
+                )
+            return pack(explanation, "Trú lại hoặc mang ô — mưa đang ở ngay đây.")
+        if overhead:
+            explanation = "Raining at your spot — the cell is right overhead."
+        else:
+            explanation = (
+                f"Raining at your spot — radar cell centre ~{distance_text} away "
+                "(~1 km resolution; rain can still be over you)."
             )
-        return pack(
-            f"Rain is very close — about {distance_text} toward {direction}.",
-            "Stay covered or bring an umbrella now.",
-        )
+        return pack(explanation, "Stay covered or take an umbrella — rain is here now.")
 
     if approaching and eta_minutes > 0:
         if lang == "vi":
@@ -241,6 +254,17 @@ def build_advice(
         return pack(explanation, advice)
 
     if moving_away:
+        # Still unsafe to call it a good outdoor window when rain is within ~8 km
+        if distance_m <= 8000:
+            if lang == "vi":
+                return pack(
+                    f"Mưa đang xa dần nhưng vẫn còn gần (~{distance_text} hướng {dir_text}).",
+                    "Đừng yên tâm quá — nên mang ô phòng thân.",
+                )
+            return pack(
+                f"Rain is moving away but still close (~{distance_text} toward {direction}).",
+                "Don't assume it's clear — bring an umbrella.",
+            )
         if lang == "vi":
             return pack(
                 f"Mưa đang xa dần. Ô mưa gần nhất khoảng {distance_text} hướng {dir_text}.",

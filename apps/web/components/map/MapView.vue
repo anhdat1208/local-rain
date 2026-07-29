@@ -161,6 +161,14 @@ function syncRainVectors() {
   const geojson = {
     type: "FeatureCollection" as const,
     features: vectors.flatMap((item) => {
+      if (
+        !Number.isFinite(item.longitude) ||
+        !Number.isFinite(item.latitude) ||
+        !Number.isFinite(item.toLongitude) ||
+        !Number.isFinite(item.toLatitude)
+      ) {
+        return [];
+      }
       const from: [number, number] = [item.longitude, item.latitude];
       const latScale = Math.cos((item.latitude * Math.PI) / 180) || 1;
       const dx = (item.toLongitude - item.longitude) * latScale;
@@ -237,7 +245,10 @@ function syncNearestRainOverlay() {
     Number.isFinite(props.rainLatitude) &&
     Number.isFinite(props.rainLongitude);
 
-  if (!hasRain) {
+  const hasUser =
+    Number.isFinite(props.latitude) && Number.isFinite(props.longitude);
+
+  if (!hasRain || !hasUser) {
     rainMarker.value?.remove();
     rainMarker.value = null;
     if (instance.getLayer(RAIN_LINE_LAYER)) instance.removeLayer(RAIN_LINE_LAYER);

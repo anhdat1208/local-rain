@@ -268,6 +268,9 @@ onBeforeUnmount(() => {
           :rain-chance-pct="nearestStore.rainChancePct"
           :rain-in-1h="nearestStore.rainIn1h"
           :rain-in-2h="nearestStore.rainIn2h"
+          :raining-here="nearestStore.rainingHere"
+          :radar-timestamp="nearestStore.radarTimestamp"
+          :radar-age-minutes="nearestStore.radarAgeMinutes"
         />
         <CloudLayerControls
           class="lr-fade-up"
