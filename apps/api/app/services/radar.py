@@ -108,7 +108,7 @@ class RadarService:
         radar = payload.get("radar") or {}
         past = radar.get("past") or []
         nowcast = radar.get("nowcast") or []
-        public_base = get_settings().public_api_base.rstrip("/")
+        public_base = get_settings().resolved_public_api_base
 
         frames: list[RadarFrameSchema] = []
         upstreams: dict[str, str] = {}

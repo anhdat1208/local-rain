@@ -9,12 +9,13 @@ router = APIRouter(tags=["health"])
 
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
+    # Postgres is optional on Vercel — Redis cache is the dependency that matters.
     postgres_ok = check_database_connection()
     redis_ok = check_redis_connection()
 
-    if postgres_ok and redis_ok:
+    if redis_ok:
         status = "ok"
-    elif postgres_ok or redis_ok:
+    elif postgres_ok:
         status = "degraded"
     else:
         status = "error"
