@@ -8,7 +8,8 @@
     "findingRain": "Finding nearest rain…",
     "pinned": "Pinned location",
     "loadingRadar": "Loading radar…",
-    "liveRadar": "Live rain radar"
+    "liveRadar": "Live rain radar",
+    "dragHandle": "Drag to resize the info sheet"
   },
   "badge": {
     "satelliteDay": "Satellite · daytime",

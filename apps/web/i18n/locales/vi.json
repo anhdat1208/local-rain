@@ -8,7 +8,8 @@
     "findingRain": "Đang tìm mưa gần nhất…",
     "pinned": "Vị trí đã ghim",
     "loadingRadar": "Đang tải radar…",
-    "liveRadar": "Radar mưa trực tiếp"
+    "liveRadar": "Radar mưa trực tiếp",
+    "dragHandle": "Kéo để thu phóng khung thông tin"
   },
   "badge": {
     "satelliteDay": "Vệ tinh · ban ngày",
