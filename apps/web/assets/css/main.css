@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-rain: #0ea5e9;
+  --color-warning: #f97316;
+  --color-danger: #ef4444;
+  --color-bg: #f5f5f7;
+  --color-card: #ffffff;
+  --lr-skeleton-a: #e2e8f0;
+  --lr-skeleton-b: #f8fafc;
+}
+
+html,
+body,
+#__nuxt {
+  height: 100%;
+  overflow: hidden;
+}
+
+.maplibregl-ctrl-top-right {
+  top: 4.5rem;
+  right: 0.75rem;
+}
+
+.maplibregl-ctrl-group {
+  border-radius: 1rem !important;
+  overflow: hidden;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08) !important;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: #0f172a;
+  font-family:
+    "SF Pro Display",
+    "SF Pro Text",
+    "Segoe UI",
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition:
+    background-color 260ms ease,
+    color 260ms ease;
+}
+
+html.dark body {
+  background: #020617;
+  color: #e2e8f0;
+}
+
+.lr-fade-up {
+  animation: lr-fade-up 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.lr-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(
+    90deg,
+    var(--lr-skeleton-a) 0%,
+    var(--lr-skeleton-b) 50%,
+    var(--lr-skeleton-a) 100%
+  );
+  background-size: 220% 100%;
+  animation: lr-skeleton-shimmer 1.1s linear infinite;
+}
+
+html.dark .lr-skeleton {
+  --lr-skeleton-a: #334155;
+  --lr-skeleton-b: #475569;
+}
+
+@keyframes lr-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes lr-skeleton-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}

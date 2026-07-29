@@ -1,0 +1,37 @@
+{
+  "name": "local-rain-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev --host 0.0.0.0 --port 3000",
+    "build": "nuxt build",
+    "preview": "nuxt preview --host 0.0.0.0 --port 3000",
+    "start": "node .output/server/index.mjs",
+    "typecheck": "nuxt typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "@nuxtjs/i18n": "^9.5.6",
+    "@pinia/nuxt": "^0.11.1",
+    "@vueuse/core": "^13.5.0",
+    "@vueuse/nuxt": "^13.5.0",
+    "maplibre-gl": "^5.6.0",
+    "nuxt": "^4.0.1",
+    "pinia": "^3.0.3",
+    "vue": "^3.5.17",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@nuxt/eslint": "^1.5.2",
+    "@nuxtjs/tailwindcss": "^6.14.0",
+    "@vite-pwa/nuxt": "^1.0.4",
+    "eslint": "^9.30.1",
+    "eslint-config-prettier": "^10.1.5",
+    "prettier": "^3.6.2",
+    "typescript": "^5.8.3",
+    "vue-tsc": "^2.2.12"
+  }
+}

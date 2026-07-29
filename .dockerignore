@@ -1,0 +1,12 @@
+.git
+.env
+**/node_modules
+**/.nuxt
+**/.output
+**/__pycache__
+**/.venv
+**/dist
+**/*.log
+**/.DS_Store
+postgres_data
+redis_data

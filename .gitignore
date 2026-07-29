@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+
+# Build / Nuxt
+.nuxt/
+.output/
+.nitro/
+.cache/
+dist/
+data/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs / coverage
+*.log
+npm-debug.log*
+coverage/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+
+# Docker volumes (local)
+postgres_data/
+redis_data/
+
+# PWA / generated
+apps/web/public/sw.js
+apps/web/public/workbox-*.js
+apps/web/dev-dist/
+
+# Local smoke-test artifacts
+scripts/e2e/*.png
+
+# Misc
+*.egg-info/
+.eggs/
+*.sqlite3

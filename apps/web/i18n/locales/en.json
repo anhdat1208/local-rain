@@ -1,0 +1,89 @@
+{
+  "brand": "Local Rain",
+  "sheet": {
+    "cloudsDay": "White clouds over land & sea",
+    "cloudsNight": "White = thick cloud · Black = clear",
+    "tapMap": "Tap the map to set your spot",
+    "locating": "Locating you…",
+    "findingRain": "Finding nearest rain…",
+    "pinned": "Pinned location",
+    "loadingRadar": "Loading radar…",
+    "liveRadar": "Live rain radar"
+  },
+  "badge": {
+    "satelliteDay": "Satellite · daytime",
+    "satelliteNight": "Satellite · white = dense cloud",
+    "tapToPin": "Tap map to pin"
+  },
+  "rain": {
+    "title": "Nearest rain",
+    "calculating": "Calculating…",
+    "noneNearby": "None nearby",
+    "clear": "Clear",
+    "approaching": "Approaching",
+    "nearby": "Nearby",
+    "scanning": "Scanning radar around you…",
+    "noCell": "No rain cell found in range.",
+    "advice": "Advice",
+    "direction": "Direction",
+    "eta": "ETA",
+    "motion": "Motion",
+    "confidence": "Confidence",
+    "etaMinutes": "{n} min",
+    "chanceLabel": "Rain chance",
+    "forecastShort": "Forecast",
+    "yes": "Yes",
+    "no": "No",
+    "chance": {
+      "none": "Very low",
+      "low": "Low",
+      "medium": "Moderate",
+      "high": "High"
+    }
+  },
+  "radar": {
+    "title": "Radar",
+    "loading": "Loading radar…",
+    "noFrames": "No radar frames",
+    "play": "Play radar",
+    "pause": "Pause radar"
+  },
+  "clouds": {
+    "satellite": "Satellite",
+    "dayTitle": "Daytime satellite",
+    "nightTitle": "Live infrared satellite",
+    "dayHint": "Live Himawari clouds over green land / blue sea. White = cloud.",
+    "nightHint": "Night IR: white / bright = thick cloud, black = clear sky.",
+    "clear": "Clear",
+    "thick": "Thick"
+  },
+  "errors": {
+    "nearestRain": "Unable to calculate nearest rain.",
+    "radar": "Radar unavailable",
+    "clouds": "Cloud layer unavailable",
+    "geoUnsupported": "Geolocation is not supported on this device.",
+    "geoDenied": "Location permission denied. Tap map to set location.",
+    "geoFailed": "{message} Tap map to set location.",
+    "geoTimeout": "GPS timed out. Tap map to set location."
+  },
+  "a11y": {
+    "locate": "Go to current location",
+    "pickLocation": "Pick location on map",
+    "language": "Change language",
+    "theme": "Toggle dark mode"
+  },
+  "lang": {
+    "vi": "VI",
+    "en": "EN"
+  },
+  "dirs": {
+    "N": "N",
+    "NE": "NE",
+    "E": "E",
+    "SE": "SE",
+    "S": "S",
+    "SW": "SW",
+    "W": "W",
+    "NW": "NW"
+  }
+}

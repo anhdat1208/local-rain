@@ -1,0 +1,89 @@
+{
+  "brand": "Local Rain",
+  "sheet": {
+    "cloudsDay": "Mây trắng trên đất & biển",
+    "cloudsNight": "Trắng = mây dày · Đen = quang",
+    "tapMap": "Chạm bản đồ để chọn vị trí",
+    "locating": "Đang định vị…",
+    "findingRain": "Đang tìm mưa gần nhất…",
+    "pinned": "Vị trí đã ghim",
+    "loadingRadar": "Đang tải radar…",
+    "liveRadar": "Radar mưa trực tiếp"
+  },
+  "badge": {
+    "satelliteDay": "Vệ tinh · ban ngày",
+    "satelliteNight": "Vệ tinh · trắng = mây dày",
+    "tapToPin": "Chạm map để ghim"
+  },
+  "rain": {
+    "title": "Mưa gần nhất",
+    "calculating": "Đang tính…",
+    "noneNearby": "Không có gần đây",
+    "clear": "Quang",
+    "approaching": "Đang tới",
+    "nearby": "Gần",
+    "scanning": "Đang quét radar quanh bạn…",
+    "noCell": "Không thấy ô mưa trong tầm.",
+    "advice": "Gợi ý",
+    "direction": "Hướng",
+    "eta": "ETA",
+    "motion": "Chuyển động",
+    "confidence": "Độ tin cậy",
+    "etaMinutes": "{n} phút",
+    "chanceLabel": "Khả năng mưa",
+    "forecastShort": "Dự đoán",
+    "yes": "Có",
+    "no": "Không",
+    "chance": {
+      "none": "Rất thấp",
+      "low": "Thấp",
+      "medium": "Trung bình",
+      "high": "Cao"
+    }
+  },
+  "radar": {
+    "title": "Radar",
+    "loading": "Đang tải radar…",
+    "noFrames": "Không có khung radar",
+    "play": "Phát radar",
+    "pause": "Tạm dừng radar"
+  },
+  "clouds": {
+    "satellite": "Vệ tinh",
+    "dayTitle": "Vệ tinh ban ngày",
+    "nightTitle": "Vệ tinh hồng ngoại",
+    "dayHint": "Mây Himawari trên đất xanh / biển xanh. Trắng = mây.",
+    "nightHint": "IR đêm: trắng / sáng = mây dày, đen = trời quang.",
+    "clear": "Quang",
+    "thick": "Dày"
+  },
+  "errors": {
+    "nearestRain": "Không tính được mưa gần nhất.",
+    "radar": "Radar không khả dụng",
+    "clouds": "Lớp mây không khả dụng",
+    "geoUnsupported": "Thiết bị không hỗ trợ định vị.",
+    "geoDenied": "Bị từ chối quyền vị trí. Chạm map để chọn.",
+    "geoFailed": "{message} Chạm map để chọn vị trí.",
+    "geoTimeout": "GPS hết thời gian. Chạm map để chọn vị trí."
+  },
+  "a11y": {
+    "locate": "Về vị trí hiện tại",
+    "pickLocation": "Chọn vị trí trên bản đồ",
+    "language": "Đổi ngôn ngữ",
+    "theme": "Đổi giao diện sáng/tối"
+  },
+  "lang": {
+    "vi": "VI",
+    "en": "EN"
+  },
+  "dirs": {
+    "N": "Bắc",
+    "NE": "Đông Bắc",
+    "E": "Đông",
+    "SE": "Đông Nam",
+    "S": "Nam",
+    "SW": "Tây Nam",
+    "W": "Tây",
+    "NW": "Tây Bắc"
+  }
+}
