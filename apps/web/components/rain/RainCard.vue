@@ -133,7 +133,7 @@ const chanceLabel = computed(() => {
         <p class="mt-1 font-semibold text-slate-900 dark:text-slate-100">
           {{ dirLabel(motionDirection) }}
           <span v-if="speedKmh > 0" class="font-normal text-slate-500 dark:text-slate-300">
-            · {{ speedKmh.toFixed(0) }}
+            · {{ speedKmh.toFixed(0) }} km/h
           </span>
         </p>
       </div>
