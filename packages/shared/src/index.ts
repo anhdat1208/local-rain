@@ -60,6 +60,9 @@ export interface NearestRainResponse {
   rainChancePct: number;
   rainIn1h: boolean;
   rainIn2h: boolean;
+  rainingHere: boolean;
+  radarTimestamp: string | null;
+  radarAgeMinutes: number;
 }
 
 export interface RainVectorItem {

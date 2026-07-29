@@ -14,7 +14,12 @@ from PIL import Image
 from app.core.redis import get_redis
 from app.schemas.nearest_rain import NearestRainResponse, RainVectorItem, RainVectorsResponse
 from app.schemas.radar import RadarFrameSchema
-from app.services.advice_rules import Lang, build_advice, normalize_lang
+from app.services.advice_rules import (
+    RAINING_HERE_M,
+    Lang,
+    build_advice,
+    normalize_lang,
+)
 from app.services.radar import RadarService
 from app.services.radar_dbz import (
     MAX_DBZ,
@@ -43,13 +48,19 @@ MAX_NEARBY_M = 120_000.0
 # Window used to describe where the cell was a moment ago
 PREVIOUS_WINDOW_S = 600.0
 VELOCITY_RADIUS_M = 100_000.0
-# Each +1 dBZ is worth this many meters when choosing between fringe vs core
-CORE_DBZ_METERS = 550.0
+# Each +1 dBZ is worth this many meters when choosing between fringe vs core.
+# Keep small: at z7 (~1.2 km/px) proximity must dominate or we lock onto a far core.
+CORE_DBZ_METERS = 120.0
 VECTOR_TILE_RADIUS = 1
-# Detection is stricter than the map filter (MIN_DBZ=30 on radar tiles): ignore drizzle / tiny speckles
-DETECT_MIN_DBZ = 40.0
-DETECT_MIN_SUPPORT = 12
+# Detection is stricter than the map filter for far cores, but keeps a soft local path
+# so thin real showers within a few km are not discarded for a stronger cell farther away.
+DETECT_MIN_DBZ = 35.0
+DETECT_MIN_SUPPORT = 4
 DETECT_SUPPORT_RADIUS_PX = 4  # Chebyshev window ≈ 2.4 km at z7
+LOCAL_SOFT_DBZ = 30.0  # match map filter
+LOCAL_MIN_SUPPORT = 1
+# ~3 px at z7 — storm centres are often offset from where rain is felt
+LOCAL_RADIUS_M = 4_000.0
 # Motion grid: ~3.3 km cells
 MOTION_GRID_DEG = 0.03
 MOTION_LOCAL_SPAN = 2
@@ -76,6 +87,11 @@ VECTOR_DISTANCE_PENALTY = 0.25
 VECTOR_PROJECT_MINUTES = 30.0
 VECTOR_MIN_LENGTH_M = 6_000.0
 VECTOR_MAX_LENGTH_M = 40_000.0
+# Strong bias so a solid nearby echo beats a far core of similar strength
+NEAR_CORE_BONUS_M = 6_000.0
+NEAR_CORE_RADIUS_M = 5_000.0
+MID_CORE_BONUS_M = 2_500.0
+MID_CORE_RADIUS_M = 8_000.0
 
 
 @dataclass(slots=True)
@@ -140,12 +156,12 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v11:{locale}:{current.unix_time}:"
+            f"nearest-rain:v14:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
         if cached is not None:
-            return cached
+            return self._with_fresh_age(cached, current)
 
         async with httpx.AsyncClient(timeout=16.0) as client:
             current_upstream = await self._radar_service.upstream_for_frame(current.unix_time)
@@ -176,7 +192,7 @@ class NearestRainService:
             hit=current_hit,
             velocity=velocity,
         )
-        result = self._build_response(latitude, longitude, current_hit, motion, locale)
+        result = self._build_response(latitude, longitude, current_hit, motion, locale, current)
         self._write_cache(cache_key, result)
         return result
 
@@ -195,7 +211,7 @@ class NearestRainService:
 
         radius_m = max(20_000.0, min(200_000.0, radius_km * 1000.0))
         cache_key = (
-            f"rain-vectors:v4:{current.unix_time}:"
+            f"rain-vectors:v5:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}:{int(radius_m)}:{limit}"
         )
         cached = self._read_vectors_cache(cache_key)
@@ -344,7 +360,7 @@ class NearestRainService:
     ) -> str:
         # Advection is a regional property, so neighbours can share one estimate
         return (
-            f"rain-velocity:v2:{current.unix_time}:"
+            f"rain-velocity:v3:{current.unix_time}:"
             f"{round(latitude, 1)}:{round(longitude, 1)}"
         )
 
@@ -871,13 +887,15 @@ class NearestRainService:
 
         pixels = image.load()
         width, height = image.size
-        candidates: list[tuple[int, int, float, float, float]] = []
+        # Soft pool (≥30) supports local detection; hard pool (≥35) for storm cores.
+        soft: list[tuple[int, int, float, float, float]] = []
+        hard: list[tuple[int, int, float, float, float]] = []
 
         for py in range(0, height, PIXEL_STEP):
             for px in range(0, width, PIXEL_STEP):
                 r, g, b, a = pixels[px, py]
                 dbz = pixel_dbz(r, g, b, a)
-                if dbz < DETECT_MIN_DBZ:
+                if dbz < LOCAL_SOFT_DBZ:
                     continue
                 rain_lat, rain_lon = tile_pixel_to_latlon(
                     tile_x,
@@ -887,37 +905,50 @@ class NearestRainService:
                     py + 0.5,
                     TILE_SIZE,
                 )
-                candidates.append((px, py, dbz, rain_lat, rain_lon))
-
-        if len(candidates) < DETECT_MIN_SUPPORT:
-            return None
+                item = (px, py, dbz, rain_lat, rain_lon)
+                soft.append(item)
+                if dbz >= DETECT_MIN_DBZ:
+                    hard.append(item)
 
         best: RainHit | None = None
         radius = DETECT_SUPPORT_RADIUS_PX
-        for px, py, dbz, rain_lat, rain_lon in candidates:
-            support = 0
-            for ox, oy, _, _, _ in candidates:
-                if abs(ox - px) <= radius and abs(oy - py) <= radius:
-                    support += 1
-                    if support >= DETECT_MIN_SUPPORT:
-                        break
-            if support < DETECT_MIN_SUPPORT:
-                continue
-            distance = haversine_m(ref_lat, ref_lon, rain_lat, rain_lon)
-            intensity = max(
-                0.0,
-                min(1.0, (dbz - DETECT_MIN_DBZ) / (MAX_DBZ - DETECT_MIN_DBZ)),
-            )
-            candidate = RainHit(
-                latitude=rain_lat,
-                longitude=rain_lon,
-                distance_m=distance,
-                intensity=intensity,
-                dbz=dbz,
-            )
-            if self._is_better_hit(candidate, best):
-                best = candidate
 
+        def consider(
+            pool: list[tuple[int, int, float, float, float]],
+            min_support: int,
+            max_distance_m: float | None,
+        ) -> None:
+            nonlocal best
+            if len(pool) < min_support:
+                return
+            for px, py, dbz, rain_lat, rain_lon in pool:
+                support = 0
+                for ox, oy, _, _, _ in pool:
+                    if abs(ox - px) <= radius and abs(oy - py) <= radius:
+                        support += 1
+                        if support >= min_support:
+                            break
+                if support < min_support:
+                    continue
+                distance = haversine_m(ref_lat, ref_lon, rain_lat, rain_lon)
+                if max_distance_m is not None and distance > max_distance_m:
+                    continue
+                intensity = max(
+                    0.0,
+                    min(1.0, (dbz - LOCAL_SOFT_DBZ) / (MAX_DBZ - LOCAL_SOFT_DBZ)),
+                )
+                candidate = RainHit(
+                    latitude=rain_lat,
+                    longitude=rain_lon,
+                    distance_m=distance,
+                    intensity=intensity,
+                    dbz=dbz,
+                )
+                if self._is_better_hit(candidate, best):
+                    best = candidate
+
+        consider(hard, DETECT_MIN_SUPPORT, None)
+        consider(soft, LOCAL_MIN_SUPPORT, LOCAL_RADIUS_M)
         return best
 
     def _analysis_tile_url(self, tile_url_template: str, tile_x: int, tile_y: int) -> str:
@@ -927,12 +958,21 @@ class NearestRainService:
             .replace("{y}", str(tile_y))
         )
 
+    def _hit_score(self, hit: RainHit) -> float:
+        # Lower is better. At mosaic zoom, prefer the closest real echo over a far hot core.
+        strength = max(0.0, hit.dbz - DETECT_MIN_DBZ)
+        score = hit.distance_m - CORE_DBZ_METERS * strength
+        if hit.distance_m <= NEAR_CORE_RADIUS_M:
+            score -= NEAR_CORE_BONUS_M
+        elif hit.distance_m <= MID_CORE_RADIUS_M:
+            score -= MID_CORE_BONUS_M
+        return score
+
     def _is_better_hit(self, candidate: RainHit, best: RainHit | None) -> bool:
         if best is None:
             return True
-        # Prefer stronger cores over nearby drizzle fringe (z7 ~1.2 km/px)
-        cand_score = candidate.distance_m - CORE_DBZ_METERS * (candidate.dbz - DETECT_MIN_DBZ)
-        best_score = best.distance_m - CORE_DBZ_METERS * (best.dbz - DETECT_MIN_DBZ)
+        cand_score = self._hit_score(candidate)
+        best_score = self._hit_score(best)
         if abs(cand_score - best_score) < 1.0:
             if candidate.dbz != best.dbz:
                 return candidate.dbz > best.dbz
@@ -946,14 +986,16 @@ class NearestRainService:
         hit: RainHit | None,
         motion: MotionEstimate,
         lang: Lang,
+        frame: RadarFrameSchema | None = None,
     ) -> NearestRainResponse:
+        radar_timestamp, radar_age = self._frame_age(frame)
         if hit is None:
             msg = (
                 "Không phát hiện mưa gần đây."
                 if lang == "vi"
                 else "No rain detected nearby."
             )
-            return self._empty_result(msg, lang)
+            return self._empty_result(msg, lang, radar_timestamp, radar_age)
 
         distance = int(round(hit.distance_m))
         direction = compass_from_bearing(
@@ -1003,9 +1045,32 @@ class NearestRainService:
             rain_chance_pct=copy.rain_chance_pct,
             rain_in_1h=copy.rain_in_1h,
             rain_in_2h=copy.rain_in_2h,
+            raining_here=distance <= RAINING_HERE_M,
+            radar_timestamp=radar_timestamp,
+            radar_age_minutes=radar_age,
         )
 
-    def _empty_result(self, explanation: str, lang: Lang = "vi") -> NearestRainResponse:
+    def _frame_age(self, frame: RadarFrameSchema | None) -> tuple[str | None, int]:
+        if frame is None:
+            return None, 0
+        age_s = max(0, int(time.time()) - int(frame.unix_time))
+        return frame.timestamp, age_s // 60
+
+    def _with_fresh_age(
+        self, result: NearestRainResponse, frame: RadarFrameSchema
+    ) -> NearestRainResponse:
+        timestamp, age = self._frame_age(frame)
+        return result.model_copy(
+            update={"radar_timestamp": timestamp, "radar_age_minutes": age}
+        )
+
+    def _empty_result(
+        self,
+        explanation: str,
+        lang: Lang = "vi",
+        radar_timestamp: str | None = None,
+        radar_age_minutes: int = 0,
+    ) -> NearestRainResponse:
         copy = build_advice(
             has_rain=False,
             distance_m=-1,
@@ -1035,6 +1100,9 @@ class NearestRainService:
             rain_chance_pct=copy.rain_chance_pct,
             rain_in_1h=copy.rain_in_1h,
             rain_in_2h=copy.rain_in_2h,
+            raining_here=False,
+            radar_timestamp=radar_timestamp,
+            radar_age_minutes=radar_age_minutes,
         )
 
     def _read_cache(self, key: str) -> NearestRainResponse | None:
