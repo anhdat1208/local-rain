@@ -166,16 +166,22 @@ def build_advice(
     if not has_rain:
         if lang == "vi":
             return AdviceResult(
-                explanation="Không phát hiện mưa gần đây.",
-                advice=f"{chance_bit} Thời điểm tốt để ra ngoài.",
+                explanation="Radar không thấy ô mưa rõ gần đây.",
+                advice=(
+                    f"{chance_bit} Tạm ổn để ra ngoài, nhưng mưa phùn/mưa nhỏ "
+                    "thường không lên radar — mang ô nếu trời còn ẩm."
+                ),
                 rain_chance=chance,
                 rain_chance_pct=pct,
                 rain_in_1h=rain_in_1h,
                 rain_in_2h=rain_in_2h,
             )
         return AdviceResult(
-            explanation="No rain detected nearby.",
-            advice=f"{chance_bit} Good window to go outside.",
+            explanation="No clear rain cell nearby on radar.",
+            advice=(
+                f"{chance_bit} Mostly fine to go out, but light drizzle often "
+                "does not show on radar — bring an umbrella if it still feels damp."
+            ),
             rain_chance=chance,
             rain_chance_pct=pct,
             rain_in_1h=rain_in_1h,
@@ -268,11 +274,11 @@ def build_advice(
         if lang == "vi":
             return pack(
                 f"Mưa đang xa dần. Ô mưa gần nhất khoảng {distance_text} hướng {dir_text}.",
-                "Thời điểm tốt để ra ngoài.",
+                "Ô lớn đã xa, nhưng mưa nhỏ/phùn vẫn có thể còn — nên mang ô nếu ra đường.",
             )
         return pack(
             f"Rain is moving away. Nearest cell about {distance_text} toward {direction}.",
-            "Good window to go outside.",
+            "The main cell is farther, but light drizzle can linger — bring an umbrella outdoors.",
         )
 
     if speed_kmh < 1:
