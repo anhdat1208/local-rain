@@ -57,10 +57,10 @@ VECTOR_TILE_RADIUS = 1
 DETECT_MIN_DBZ = 35.0
 DETECT_MIN_SUPPORT = 4
 DETECT_SUPPORT_RADIUS_PX = 4  # Chebyshev window ≈ 2.4 km at z7
-LOCAL_SOFT_DBZ = 30.0  # match map filter
+LOCAL_SOFT_DBZ = 25.0  # catch light drizzle the mosaic still paints
 LOCAL_MIN_SUPPORT = 1
-# ~3 px at z7 — storm centres are often offset from where rain is felt
-LOCAL_RADIUS_M = 4_000.0
+# Soft path reaches farther so leftover showers aren't ignored for a distant core
+LOCAL_RADIUS_M = 6_000.0
 # Motion grid: ~3.3 km cells
 MOTION_GRID_DEG = 0.03
 MOTION_LOCAL_SPAN = 2
@@ -156,7 +156,7 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v14:{locale}:{current.unix_time}:"
+            f"nearest-rain:v15:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
