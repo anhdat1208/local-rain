@@ -21,8 +21,6 @@ const props = withDefaults(
     rainingHere?: boolean;
     radarTimestamp?: string | null;
     radarAgeMinutes?: number;
-    skyState?: string;
-    cloudCoverPct?: number;
   }>(),
   {
     loading: false,
@@ -43,8 +41,6 @@ const props = withDefaults(
     rainingHere: false,
     radarTimestamp: null,
     radarAgeMinutes: 0,
-    skyState: "clear",
-    cloudCoverPct: 0,
   },
 );
 
@@ -68,36 +64,9 @@ const radarClock = computed(() => {
 });
 
 const headlineValue = computed(() => {
-  if (props.rainingHere) return t("rain.hereValue");
-  if (props.skyState === "cloudy_dry") return t("rain.cloudyDryValue");
   if (!props.hasRain) return t("rain.noneNearby");
+  if (props.rainingHere) return t("rain.hereValue");
   return props.distanceLabel;
-});
-
-const badgeLabel = computed(() => {
-  if (props.rainingHere) return t("rain.here");
-  if (props.skyState === "cloudy_dry") return t("rain.cloudyDry");
-  if (props.skyState === "partly" && !props.hasRain) return t("rain.partly");
-  if (!props.hasRain) return t("rain.clear");
-  if (props.approaching) return t("rain.approaching");
-  return t("rain.nearby");
-});
-
-const badgeClass = computed(() => {
-  if (props.rainingHere) return "bg-rose-500/15 text-rose-600";
-  if (props.skyState === "cloudy_dry") return "bg-slate-300/60 text-slate-700";
-  if (props.skyState === "partly" && !props.hasRain) return "bg-slate-200 text-slate-600";
-  if (!props.hasRain) return "bg-slate-200 text-slate-500";
-  if (props.approaching) return "bg-warning/15 text-warning";
-  return "bg-rain/15 text-rain";
-});
-
-const adviceClass = computed(() => {
-  if (props.rainingHere) return "bg-rose-50 text-rose-900";
-  if (props.skyState === "cloudy_dry") return "bg-slate-100 text-slate-800";
-  if (!props.hasRain) return "bg-emerald-50 text-emerald-800";
-  if (props.approaching) return "bg-amber-50 text-amber-900";
-  return "bg-sky-50 text-sky-900";
 });
 </script>
 
@@ -106,21 +75,29 @@ const adviceClass = computed(() => {
     <div class="flex items-start justify-between gap-3">
       <div>
         <p class="text-xs font-medium text-slate-500 dark:text-slate-300">
-          {{
-            rainingHere
-              ? t("rain.titleHere")
-              : skyState === "cloudy_dry"
-                ? t("rain.titleCloudyDry")
-                : t("rain.title")
-          }}
+          {{ rainingHere ? t("rain.titleHere") : t("rain.title") }}
         </p>
         <div v-if="loading" class="mt-2 h-8 w-28 rounded-xl lr-skeleton" />
         <p v-else class="mt-1 text-2xl font-semibold tracking-tight text-slate-900">
           {{ headlineValue }}
         </p>
       </div>
-      <div class="rounded-2xl px-2.5 py-1 text-xs font-semibold" :class="badgeClass">
-        {{ badgeLabel }}
+      <div
+        class="rounded-2xl px-2.5 py-1 text-xs font-semibold"
+        :class="
+          !hasRain
+            ? 'bg-slate-200 text-slate-500'
+            : rainingHere
+              ? 'bg-rose-500/15 text-rose-600'
+              : approaching
+                ? 'bg-warning/15 text-warning'
+                : 'bg-rain/15 text-rain'
+        "
+      >
+        <template v-if="!hasRain">{{ t("rain.clear") }}</template>
+        <template v-else-if="rainingHere">{{ t("rain.here") }}</template>
+        <template v-else-if="approaching">{{ t("rain.approaching") }}</template>
+        <template v-else>{{ t("rain.nearby") }}</template>
       </div>
     </div>
 
@@ -132,7 +109,15 @@ const adviceClass = computed(() => {
     <div
       v-if="!loading && advice"
       class="mt-3 rounded-2xl px-3 py-2.5 text-sm font-medium"
-      :class="adviceClass"
+      :class="
+        !hasRain
+          ? 'bg-emerald-50 text-emerald-800'
+          : rainingHere
+            ? 'bg-rose-50 text-rose-900'
+            : approaching
+              ? 'bg-amber-50 text-amber-900'
+              : 'bg-sky-50 text-sky-900'
+      "
     >
       <div class="flex items-center justify-between gap-2">
         <p class="text-[10px] font-semibold uppercase tracking-wide opacity-70">
@@ -189,12 +174,10 @@ const adviceClass = computed(() => {
     </div>
 
     <p
-      v-if="!loading && (radarClock || cloudCoverPct > 0)"
+      v-if="!loading && radarClock"
       class="mt-2 text-[11px] tabular-nums text-slate-400 dark:text-slate-400"
     >
-      <span v-if="radarClock">{{ t("rain.radarAge", { time: radarClock, minutes: radarAgeMinutes }) }}</span>
-      <span v-if="radarClock && cloudCoverPct > 0"> · </span>
-      <span v-if="cloudCoverPct > 0">{{ t("rain.cloudCover", { pct: cloudCoverPct }) }}</span>
+      {{ t("rain.radarAge", { time: radarClock, minutes: radarAgeMinutes }) }}
     </p>
   </div>
 </template>
