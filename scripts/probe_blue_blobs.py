@@ -17,10 +17,10 @@ RADAR_ZOOM = 7
 USER = (10.745, 106.670)
 # Sample regions user called out: west An Lac, east Cat Lai, near user
 REGIONS = {
-    "near_user": (10.745, 106.670, 8_000),
-    "west_anlac": (10.75, 106.52, 12_000),
-    "east_catlai": (10.78, 106.82, 12_000),
-    "center_q1": (10.78, 106.70, 8_000),
+    "near_user_chanhhung": (10.745, 106.670, 6_000),
+    "box_anlac": (10.740, 106.617, 6_000),
+    "box_phulam": (10.757, 106.629, 5_000),
+    "box_binhtrung": (10.790, 106.768, 8_000),
 }
 
 

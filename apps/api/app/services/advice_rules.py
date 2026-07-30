@@ -21,6 +21,20 @@ class AdviceResult:
 
 # Radar resolution ~1 km/px at analysis zoom, so "here" includes nearby cell centres
 RAINING_HERE_M = 4_000
+# Below this the echo is often aloft only (virga) or plain clutter — no wet ground
+CONFIRM_DBZ = 30.0
+# At this strength the cell reliably reaches the ground as real rain
+STRONG_DBZ = 35.0
+
+
+def is_raining_here(distance_m: int, dbz: float) -> bool:
+    """Rain over the user needs both proximity and enough reflectivity."""
+    if dbz >= STRONG_DBZ:
+        return distance_m <= RAINING_HERE_M
+    if dbz >= CONFIRM_DBZ:
+        return distance_m <= 2_500
+    # Weak returns only count when they sit almost exactly overhead
+    return dbz > 0 and distance_m <= 1_200
 
 
 _DIR_VI: dict[str, str] = {
@@ -55,6 +69,7 @@ def estimate_rain_chance(
     approaching: bool,
     eta_minutes: int,
     intensity: float = 0.0,
+    dbz: float = 0.0,
 ) -> tuple[RainChance, int]:
     """Heuristic nowcast chance at the user's spot (not a NWP forecast)."""
     if not has_rain:
@@ -89,6 +104,13 @@ def estimate_rain_chance(
     score += max(0.0, min(14.0, intensity * 14.0))
     pct = int(max(5, min(92, round(score))))
 
+    # A weak echo can never justify a near-certain call, however close it sits
+    if dbz > 0:
+        if dbz < CONFIRM_DBZ:
+            pct = min(pct, 45)
+        elif dbz < STRONG_DBZ:
+            pct = min(pct, 70)
+
     if pct >= 65:
         return "high", pct
     if pct >= 40:
@@ -121,11 +143,16 @@ def _horizon_rain_flags(
     approaching: bool,
     eta_minutes: int,
     pct: int,
+    raining_here: bool = False,
+    dbz: float = 0.0,
 ) -> tuple[bool, bool]:
     if not has_rain:
         return False, False
-    if distance_m <= RAINING_HERE_M:
+    if raining_here:
         return True, True
+    if 0 < dbz < CONFIRM_DBZ:
+        # Weak echo drifting over you rarely turns into rain on the ground
+        return False, pct >= 40
     if approaching and eta_minutes > 0:
         return (eta_minutes <= 60, eta_minutes <= 120)
     in_1h = pct >= 45
@@ -145,6 +172,7 @@ def build_advice(
     previous_distance_m: float | None,
     lang: Lang = "vi",
     intensity: float = 0.0,
+    dbz: float = 0.0,
 ) -> AdviceResult:
     """Deterministic nowcast copy — no LLM."""
     chance, pct = estimate_rain_chance(
@@ -153,13 +181,17 @@ def build_advice(
         approaching=approaching,
         eta_minutes=eta_minutes,
         intensity=intensity,
+        dbz=dbz,
     )
+    raining_here = has_rain and is_raining_here(distance_m, dbz)
     rain_in_1h, rain_in_2h = _horizon_rain_flags(
         has_rain=has_rain,
         distance_m=distance_m,
         approaching=approaching,
         eta_minutes=eta_minutes,
         pct=pct,
+        raining_here=raining_here,
+        dbz=dbz,
     )
     chance_bit = _chance_line(chance, pct, lang)
 
@@ -207,7 +239,7 @@ def build_advice(
             rain_in_2h=rain_in_2h,
         )
 
-    if distance_m <= RAINING_HERE_M:
+    if raining_here:
         overhead = distance_m <= 800
         if lang == "vi":
             if overhead:
@@ -226,6 +258,19 @@ def build_advice(
                 "(~1 km resolution; rain can still be over you)."
             )
         return pack(explanation, "Stay covered or take an umbrella — rain is here now.")
+
+    if dbz > 0 and dbz < CONFIRM_DBZ:
+        if lang == "vi":
+            return pack(
+                f"Chỉ có echo yếu (~{dbz:.0f} dBZ) cách {distance_text} hướng {dir_text} — "
+                "thường là mây/mưa trên cao, chưa chắc xuống tới mặt đất.",
+                "Nhiều khả năng chưa mưa; theo dõi thêm nếu trời tối đi.",
+            )
+        return pack(
+            f"Only a weak echo (~{dbz:.0f} dBZ) {distance_text} toward {direction} — "
+            "usually aloft, not necessarily reaching the ground.",
+            "Probably not raining; keep an eye out if the sky darkens.",
+        )
 
     if approaching and eta_minutes > 0:
         if lang == "vi":

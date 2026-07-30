@@ -15,9 +15,9 @@ from app.core.redis import get_redis
 from app.schemas.nearest_rain import NearestRainResponse, RainVectorItem, RainVectorsResponse
 from app.schemas.radar import RadarFrameSchema
 from app.services.advice_rules import (
-    RAINING_HERE_M,
     Lang,
     build_advice,
+    is_raining_here,
     normalize_lang,
 )
 from app.services.radar import RadarService
@@ -58,7 +58,8 @@ DETECT_MIN_DBZ = 35.0
 DETECT_MIN_SUPPORT = 4
 DETECT_SUPPORT_RADIUS_PX = 4  # Chebyshev window ≈ 2.4 km at z7
 LOCAL_SOFT_DBZ = 25.0  # advice-only: catch light returns without painting them on the map
-LOCAL_MIN_SUPPORT = 1
+# Isolated speckle is clutter, so a soft hit must sit inside a small cluster
+LOCAL_MIN_SUPPORT = 3
 # Soft path reaches farther so leftover showers aren't ignored for a distant core
 LOCAL_RADIUS_M = 6_000.0
 # Motion grid: ~3.3 km cells
@@ -156,7 +157,7 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v15:{locale}:{current.unix_time}:"
+            f"nearest-rain:v16:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
@@ -1025,6 +1026,7 @@ class NearestRainService:
             previous_distance_m=motion.previous_distance_m,
             lang=lang,
             intensity=hit.intensity,
+            dbz=hit.dbz,
         )
 
         return NearestRainResponse(
@@ -1045,7 +1047,7 @@ class NearestRainService:
             rain_chance_pct=copy.rain_chance_pct,
             rain_in_1h=copy.rain_in_1h,
             rain_in_2h=copy.rain_in_2h,
-            raining_here=distance <= RAINING_HERE_M,
+            raining_here=is_raining_here(distance, hit.dbz),
             radar_timestamp=radar_timestamp,
             radar_age_minutes=radar_age,
         )
