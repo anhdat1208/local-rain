@@ -63,8 +63,6 @@ export interface NearestRainResponse {
   rainingHere: boolean;
   radarTimestamp: string | null;
   radarAgeMinutes: number;
-  skyState: "clear" | "partly" | "cloudy" | "cloudy_dry" | "raining" | string;
-  cloudCoverPct: number;
 }
 
 export interface RainVectorItem {

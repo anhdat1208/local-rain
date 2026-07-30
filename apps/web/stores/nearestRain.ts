@@ -22,8 +22,6 @@ interface NearestRainState {
   rainingHere: boolean;
   radarTimestamp: string | null;
   radarAgeMinutes: number;
-  skyState: string;
-  cloudCoverPct: number;
   loading: boolean;
   error: string | null;
 }
@@ -49,8 +47,6 @@ const initialState = (): NearestRainState => ({
   rainingHere: false,
   radarTimestamp: null,
   radarAgeMinutes: 0,
-  skyState: "clear",
-  cloudCoverPct: 0,
   loading: false,
   error: null,
 });
@@ -101,8 +97,6 @@ export const useNearestRainStore = defineStore("nearestRain", {
       this.rainingHere = payload.rainingHere ?? false;
       this.radarTimestamp = payload.radarTimestamp ?? null;
       this.radarAgeMinutes = payload.radarAgeMinutes ?? 0;
-      this.skyState = payload.skyState ?? "clear";
-      this.cloudCoverPct = payload.cloudCoverPct ?? 0;
       this.loading = false;
       this.error = null;
     },
