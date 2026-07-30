@@ -19,22 +19,35 @@ class AdviceResult:
     rain_in_2h: bool
 
 
-# Radar resolution ~1 km/px at analysis zoom, so "here" includes nearby cell centres
-RAINING_HERE_M = 4_000
+# Band treated as "very close" when scoring chance
+RAINING_HERE_M = 2_500
+# A radar pixel spans ~1.2 km, so allow that much slop — but no more. Field reports
+# show a cell 3–4 km away regularly leaves the user completely dry.
+HERE_STRONG_M = 2_000
+HERE_MODERATE_M = 1_500
+HERE_WEAK_M = 800
 # Below this the echo is often aloft only (virga) or plain clutter — no wet ground
 CONFIRM_DBZ = 30.0
 # At this strength the cell reliably reaches the ground as real rain
 STRONG_DBZ = 35.0
 
 
-def is_raining_here(distance_m: int, dbz: float) -> bool:
-    """Rain over the user needs both proximity and enough reflectivity."""
+# Sampled neighbours a cell must have before it counts as a real shower rather
+# than mosaic speckle. The window holds 25 samples, so this is roughly 15 km².
+SOLID_SUPPORT = 8
+
+
+def is_raining_here(distance_m: int, dbz: float, support: int = 0) -> bool:
+    """Rain over the user needs proximity, reflectivity and a solid cluster."""
+    if support and support < SOLID_SUPPORT:
+        # Isolated speckle: only trust it when it is practically overhead
+        return dbz >= STRONG_DBZ and distance_m <= HERE_WEAK_M
     if dbz >= STRONG_DBZ:
-        return distance_m <= RAINING_HERE_M
+        return distance_m <= HERE_STRONG_M
     if dbz >= CONFIRM_DBZ:
-        return distance_m <= 2_500
+        return distance_m <= HERE_MODERATE_M
     # Weak returns only count when they sit almost exactly overhead
-    return dbz > 0 and distance_m <= 1_200
+    return dbz > 0 and distance_m <= HERE_WEAK_M
 
 
 _DIR_VI: dict[str, str] = {
@@ -70,6 +83,7 @@ def estimate_rain_chance(
     eta_minutes: int,
     intensity: float = 0.0,
     dbz: float = 0.0,
+    support: int = 0,
 ) -> tuple[RainChance, int]:
     """Heuristic nowcast chance at the user's spot (not a NWP forecast)."""
     if not has_rain:
@@ -110,6 +124,9 @@ def estimate_rain_chance(
             pct = min(pct, 45)
         elif dbz < STRONG_DBZ:
             pct = min(pct, 70)
+    # Speckle a few pixels wide is usually clutter, not a shower
+    if support and support < SOLID_SUPPORT:
+        pct = min(pct, 50)
 
     if pct >= 65:
         return "high", pct
@@ -145,11 +162,15 @@ def _horizon_rain_flags(
     pct: int,
     raining_here: bool = False,
     dbz: float = 0.0,
+    support: int = 0,
 ) -> tuple[bool, bool]:
     if not has_rain:
         return False, False
     if raining_here:
         return True, True
+    if support and support < SOLID_SUPPORT:
+        # Clutter-sized echo: not a basis for forecasting rain over the next hours
+        return False, pct >= 45
     if 0 < dbz < CONFIRM_DBZ:
         # Weak echo drifting over you rarely turns into rain on the ground
         return False, pct >= 40
@@ -173,6 +194,7 @@ def build_advice(
     lang: Lang = "vi",
     intensity: float = 0.0,
     dbz: float = 0.0,
+    support: int = 0,
 ) -> AdviceResult:
     """Deterministic nowcast copy — no LLM."""
     chance, pct = estimate_rain_chance(
@@ -182,8 +204,9 @@ def build_advice(
         eta_minutes=eta_minutes,
         intensity=intensity,
         dbz=dbz,
+        support=support,
     )
-    raining_here = has_rain and is_raining_here(distance_m, dbz)
+    raining_here = has_rain and is_raining_here(distance_m, dbz, support)
     rain_in_1h, rain_in_2h = _horizon_rain_flags(
         has_rain=has_rain,
         distance_m=distance_m,
@@ -192,6 +215,7 @@ def build_advice(
         pct=pct,
         raining_here=raining_here,
         dbz=dbz,
+        support=support,
     )
     chance_bit = _chance_line(chance, pct, lang)
 
@@ -259,6 +283,19 @@ def build_advice(
             )
         return pack(explanation, "Stay covered or take an umbrella — rain is here now.")
 
+    if support and support < SOLID_SUPPORT and distance_m <= 12_000:
+        if lang == "vi":
+            return pack(
+                f"Chỉ là đốm echo nhỏ lẻ (~{dbz:.0f} dBZ, vài km²) cách {distance_text} "
+                f"hướng {dir_text} — thường là nhiễu radar chứ không phải ô mưa.",
+                "Nhiều khả năng trời vẫn ráo; không cần lo lắm.",
+            )
+        return pack(
+            f"Just an isolated speck (~{dbz:.0f} dBZ, a few km²) {distance_text} "
+            f"toward {direction} — usually radar clutter, not a shower.",
+            "Most likely still dry; nothing to worry about.",
+        )
+
     if dbz > 0 and dbz < CONFIRM_DBZ:
         if lang == "vi":
             return pack(
@@ -324,6 +361,17 @@ def build_advice(
         return pack(
             f"Rain is moving away. Nearest cell about {distance_text} toward {direction}.",
             "The main cell is farther, but light drizzle can linger — bring an umbrella outdoors.",
+        )
+
+    if distance_m <= 5_000:
+        if lang == "vi":
+            return pack(
+                f"Ô mưa cách {distance_text} hướng {dir_text} — chỗ bạn có thể vẫn ráo.",
+                "Mưa quanh đây nhưng chưa trùm lên bạn; mang ô nếu đi xa.",
+            )
+        return pack(
+            f"A cell sits {distance_text} toward {direction} — your spot may still be dry.",
+            "Rain is around but not over you; take an umbrella if you go far.",
         )
 
     if speed_kmh < 1:

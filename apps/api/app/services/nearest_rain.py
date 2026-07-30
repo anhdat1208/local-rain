@@ -102,6 +102,8 @@ class RainHit:
     distance_m: float
     intensity: float
     dbz: float = 0.0
+    # Sampled neighbours inside the support window; small values mean speckle
+    support: int = 0
 
 
 @dataclass(slots=True)
@@ -157,7 +159,7 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v16:{locale}:{current.unix_time}:"
+            f"nearest-rain:v18:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
@@ -922,13 +924,14 @@ class NearestRainService:
             nonlocal best
             if len(pool) < min_support:
                 return
+            # Grid lookup keeps the neighbour count O(window) instead of O(pool)
+            occupied = {(px, py) for px, py, _, _, _ in pool}
             for px, py, dbz, rain_lat, rain_lon in pool:
                 support = 0
-                for ox, oy, _, _, _ in pool:
-                    if abs(ox - px) <= radius and abs(oy - py) <= radius:
-                        support += 1
-                        if support >= min_support:
-                            break
+                for oy in range(py - radius, py + radius + 1, PIXEL_STEP):
+                    for ox in range(px - radius, px + radius + 1, PIXEL_STEP):
+                        if (ox, oy) in occupied:
+                            support += 1
                 if support < min_support:
                     continue
                 distance = haversine_m(ref_lat, ref_lon, rain_lat, rain_lon)
@@ -944,6 +947,7 @@ class NearestRainService:
                     distance_m=distance,
                     intensity=intensity,
                     dbz=dbz,
+                    support=support,
                 )
                 if self._is_better_hit(candidate, best):
                     best = candidate
@@ -1027,6 +1031,7 @@ class NearestRainService:
             lang=lang,
             intensity=hit.intensity,
             dbz=hit.dbz,
+            support=hit.support,
         )
 
         return NearestRainResponse(
@@ -1047,7 +1052,7 @@ class NearestRainService:
             rain_chance_pct=copy.rain_chance_pct,
             rain_in_1h=copy.rain_in_1h,
             rain_in_2h=copy.rain_in_2h,
-            raining_here=is_raining_here(distance, hit.dbz),
+            raining_here=is_raining_here(distance, hit.dbz, hit.support),
             radar_timestamp=radar_timestamp,
             radar_age_minutes=radar_age,
         )

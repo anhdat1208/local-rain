@@ -13,9 +13,9 @@ from app.utils.geo import haversine_m, latlon_to_tile, tile_pixel_to_latlon
 
 RADAR_ZOOM = 7
 SPOTS = {
-    "ChanhHung": (10.745, 106.670),
-    "AnLac": (10.740, 106.617),
-    "BinhTrung": (10.790, 106.768),
+    "ChanhHung_user": (10.745, 106.670),
+    "box_cholon": (10.753, 106.645),
+    "box_binhhung": (10.723, 106.678),
 }
 
 
