@@ -57,7 +57,7 @@ VECTOR_TILE_RADIUS = 1
 DETECT_MIN_DBZ = 35.0
 DETECT_MIN_SUPPORT = 4
 DETECT_SUPPORT_RADIUS_PX = 4  # Chebyshev window ≈ 2.4 km at z7
-LOCAL_SOFT_DBZ = 25.0  # catch light drizzle the mosaic still paints
+LOCAL_SOFT_DBZ = 25.0  # advice-only: catch light returns without painting them on the map
 LOCAL_MIN_SUPPORT = 1
 # Soft path reaches farther so leftover showers aren't ignored for a distant core
 LOCAL_RADIUS_M = 6_000.0
