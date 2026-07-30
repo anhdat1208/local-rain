@@ -62,7 +62,7 @@ class RadarService:
         if z < 0 or z > 7 or x < 0 or y < 0:
             raise ValueError("Invalid tile coordinates")
 
-        cache_key = f"radar:tile:v2:{unix_time}:{z}:{x}:{y}"
+        cache_key = f"radar:tile:v3:{unix_time}:{z}:{x}:{y}"
         try:
             cached = get_redis().get(cache_key)
             if cached:

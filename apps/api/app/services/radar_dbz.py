@@ -6,8 +6,11 @@ from functools import lru_cache
 
 from PIL import Image
 
-# Universal Blue: 15–24 = very light fringe noise; 25+ = drizzle / soft rain worth showing
-MIN_DBZ = 25
+# Map only paints cells likely to wet the ground. Soft drizzle (25–34) is used
+# for nearest-rain advice, not for the overlay — RainViewer paints a lot of
+# non-raining fringe in that band over Vietnam.
+MAP_MIN_DBZ = 35
+MIN_DBZ = MAP_MIN_DBZ
 MAX_DBZ = 60
 COLOR_MATCH_MAX_DIST = 48.0
 
@@ -107,8 +110,8 @@ def dbz_to_cool_color(dbz: float) -> tuple[int, int, int]:
     return (173, 109, 232)  # magenta-purple for strongest cores
 
 
-def filter_tile_below_dbz(png_bytes: bytes, min_dbz: float = MIN_DBZ) -> bytes:
-    """Hide returns below min_dbz; map keeps light drizzle (≥25) visible."""
+def filter_tile_below_dbz(png_bytes: bytes, min_dbz: float = MAP_MIN_DBZ) -> bytes:
+    """Hide weak fringe; map shows ≥35 dBZ cores that usually mean real rain."""
     image = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     pixels = image.load()
     width, height = image.size
