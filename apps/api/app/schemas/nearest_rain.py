@@ -26,6 +26,8 @@ class NearestRainResponse(BaseModel):
     raining_here: bool = Field(default=False, alias="rainingHere")
     radar_timestamp: str | None = Field(default=None, alias="radarTimestamp")
     radar_age_minutes: int = Field(default=0, alias="radarAgeMinutes", ge=0)
+    sky_state: str = Field(default="clear", alias="skyState")
+    cloud_cover_pct: int = Field(default=0, alias="cloudCoverPct", ge=0, le=100)
 
 
 class RainVectorItem(BaseModel):

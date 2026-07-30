@@ -7,6 +7,7 @@ from app.utils.geo import CompassDirection
 
 Lang = Literal["en", "vi"]
 RainChance = Literal["none", "low", "medium", "high"]
+SkyState = Literal["clear", "partly", "cloudy", "cloudy_dry", "raining"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +18,7 @@ class AdviceResult:
     rain_chance_pct: int
     rain_in_1h: bool
     rain_in_2h: bool
+    sky_state: SkyState = "clear"
 
 
 # Band treated as "very close" when scoring chance
@@ -35,6 +37,20 @@ STRONG_DBZ = 35.0
 # Sampled neighbours a cell must have before it counts as a real shower rather
 # than mosaic speckle. The window holds 25 samples, so this is roughly 15 km².
 SOLID_SUPPORT = 8
+
+
+def classify_sky(
+    *,
+    raining_here: bool,
+    cloud_cover: float,
+) -> SkyState:
+    if raining_here:
+        return "raining"
+    if cloud_cover >= 0.32:
+        return "cloudy_dry"
+    if cloud_cover >= 0.15:
+        return "partly"
+    return "clear"
 
 
 def is_raining_here(distance_m: int, dbz: float, support: int = 0) -> bool:
@@ -195,6 +211,7 @@ def build_advice(
     intensity: float = 0.0,
     dbz: float = 0.0,
     support: int = 0,
+    cloud_cover: float = 0.0,
 ) -> AdviceResult:
     """Deterministic nowcast copy — no LLM."""
     chance, pct = estimate_rain_chance(
@@ -207,6 +224,7 @@ def build_advice(
         support=support,
     )
     raining_here = has_rain and is_raining_here(distance_m, dbz, support)
+    sky_state = classify_sky(raining_here=raining_here, cloud_cover=cloud_cover)
     rain_in_1h, rain_in_2h = _horizon_rain_flags(
         has_rain=has_rain,
         distance_m=distance_m,
@@ -219,29 +237,52 @@ def build_advice(
     )
     chance_bit = _chance_line(chance, pct, lang)
 
-    if not has_rain:
-        if lang == "vi":
-            return AdviceResult(
-                explanation="Radar không thấy ô mưa rõ gần đây.",
-                advice=(
-                    f"{chance_bit} Tạm ổn để ra ngoài, nhưng mưa phùn/mưa nhỏ "
-                    "thường không lên radar — mang ô nếu trời còn ẩm."
-                ),
-                rain_chance=chance,
-                rain_chance_pct=pct,
-                rain_in_1h=rain_in_1h,
-                rain_in_2h=rain_in_2h,
-            )
+    def pack(explanation: str, advice: str, state: SkyState | None = None) -> AdviceResult:
         return AdviceResult(
-            explanation="No clear rain cell nearby on radar.",
-            advice=(
-                f"{chance_bit} Mostly fine to go out, but light drizzle often "
-                "does not show on radar — bring an umbrella if it still feels damp."
-            ),
+            explanation=explanation,
+            advice=f"{chance_bit} {advice}",
             rain_chance=chance,
             rain_chance_pct=pct,
             rain_in_1h=rain_in_1h,
             rain_in_2h=rain_in_2h,
+            sky_state=state or sky_state,
+        )
+
+    if not has_rain:
+        if sky_state == "cloudy_dry":
+            if lang == "vi":
+                return pack(
+                    "Trời nhiều mây · radar không thấy mưa tại chỗ.",
+                    "Đường nhiều khả năng vẫn khô — mang ô nếu đi lâu phòng mây dày hơn.",
+                )
+            return pack(
+                "Cloudy overhead · radar shows no rain at your spot.",
+                "Roads are likely still dry — take an umbrella if you'll be out long.",
+            )
+        if sky_state == "partly":
+            if lang == "vi":
+                return pack(
+                    "Trời có mây · radar không thấy mưa gần.",
+                    "Tạm ổn để ra ngoài; mang ô nếu trời tối dần.",
+                )
+            return pack(
+                "Some cloud · radar shows no nearby rain.",
+                "Fine to go out; bring an umbrella if the sky darkens.",
+            )
+        if lang == "vi":
+            return pack(
+                "Radar không thấy ô mưa rõ gần đây.",
+                (
+                    "Tạm ổn để ra ngoài, nhưng mưa phùn/mưa nhỏ "
+                    "thường không lên radar — mang ô nếu trời còn ẩm."
+                ),
+            )
+        return pack(
+            "No clear rain cell nearby on radar.",
+            (
+                "Mostly fine to go out, but light drizzle often "
+                "does not show on radar — bring an umbrella if it still feels damp."
+            ),
         )
 
     distance_text = _format_distance(distance_m, lang)
@@ -252,16 +293,6 @@ def build_advice(
         and distance_m > previous_distance_m + 80
         and not approaching
     )
-
-    def pack(explanation: str, advice: str) -> AdviceResult:
-        return AdviceResult(
-            explanation=explanation,
-            advice=f"{chance_bit} {advice}",
-            rain_chance=chance,
-            rain_chance_pct=pct,
-            rain_in_1h=rain_in_1h,
-            rain_in_2h=rain_in_2h,
-        )
 
     if raining_here:
         overhead = distance_m <= 800
@@ -283,7 +314,43 @@ def build_advice(
             )
         return pack(explanation, "Stay covered or take an umbrella — rain is here now.")
 
+    # Radar dry overhead, but satellite sees cloud — the case the user asked for
+    if sky_state == "cloudy_dry" and distance_m > HERE_STRONG_M:
+        if lang == "vi":
+            return pack(
+                (
+                    f"Trời nhiều mây · radar không thấy mưa tại chỗ "
+                    f"(ô gần nhất ~{distance_text} hướng {dir_text})."
+                ),
+                "Đường nhiều khả năng vẫn khô — mang ô nếu đi lâu.",
+            )
+        return pack(
+            (
+                f"Cloudy overhead · radar shows no rain at your spot "
+                f"(nearest cell ~{distance_text} toward {direction})."
+            ),
+            "Roads are likely still dry — take an umbrella if you'll be out long.",
+        )
+
     if support and support < SOLID_SUPPORT and distance_m <= 12_000:
+        if sky_state in {"cloudy_dry", "partly"}:
+            if lang == "vi":
+                return pack(
+                    (
+                        f"Trời có mây · radar chỉ thấy đốm nhiễu (~{dbz:.0f} dBZ) "
+                        f"cách {distance_text} — không phải ô mưa thật."
+                    ),
+                    "Nhiều khả năng đường vẫn khô; không cần lo lắm.",
+                    "cloudy_dry" if sky_state == "cloudy_dry" else "partly",
+                )
+            return pack(
+                (
+                    f"Some cloud · radar only shows a speck (~{dbz:.0f} dBZ) "
+                    f"{distance_text} away — not a real shower."
+                ),
+                "Roads are likely still dry; nothing to worry about.",
+                "cloudy_dry" if sky_state == "cloudy_dry" else "partly",
+            )
         if lang == "vi":
             return pack(
                 f"Chỉ là đốm echo nhỏ lẻ (~{dbz:.0f} dBZ, vài km²) cách {distance_text} "

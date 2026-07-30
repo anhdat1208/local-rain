@@ -20,6 +20,7 @@ from app.services.advice_rules import (
     is_raining_here,
     normalize_lang,
 )
+from app.services.clouds import CloudCoverSample, CloudsService
 from app.services.radar import RadarService
 from app.services.radar_dbz import (
     MAX_DBZ,
@@ -138,8 +139,13 @@ class MotionEstimate:
 
 
 class NearestRainService:
-    def __init__(self, radar_service: RadarService) -> None:
+    def __init__(
+        self,
+        radar_service: RadarService,
+        clouds_service: CloudsService | None = None,
+    ) -> None:
         self._radar_service = radar_service
+        self._clouds_service = clouds_service or CloudsService()
 
     async def find_nearest(
         self,
@@ -159,7 +165,7 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v18:{locale}:{current.unix_time}:"
+            f"nearest-rain:v19:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
@@ -169,7 +175,7 @@ class NearestRainService:
         async with httpx.AsyncClient(timeout=16.0) as client:
             current_upstream = await self._radar_service.upstream_for_frame(current.unix_time)
             # Same velocity field that drives the map arrows, so both stay consistent
-            current_hit, velocity = await asyncio.gather(
+            current_hit, velocity, clouds = await asyncio.gather(
                 self._find_nearest_hit(
                     client=client,
                     tile_url_template=current_upstream,
@@ -184,6 +190,7 @@ class NearestRainService:
                     latitude=latitude,
                     longitude=longitude,
                 ),
+                self._clouds_service.sample_cover(latitude, longitude),
             )
 
         if current_hit is not None and current_hit.distance_m > MAX_NEARBY_M:
@@ -195,7 +202,9 @@ class NearestRainService:
             hit=current_hit,
             velocity=velocity,
         )
-        result = self._build_response(latitude, longitude, current_hit, motion, locale, current)
+        result = self._build_response(
+            latitude, longitude, current_hit, motion, locale, current, clouds
+        )
         self._write_cache(cache_key, result)
         return result
 
@@ -992,15 +1001,20 @@ class NearestRainService:
         motion: MotionEstimate,
         lang: Lang,
         frame: RadarFrameSchema | None = None,
+        clouds: CloudCoverSample | None = None,
     ) -> NearestRainResponse:
         radar_timestamp, radar_age = self._frame_age(frame)
+        cloud_cover = clouds.cover if clouds is not None else 0.0
+        cloud_pct = int(round(max(0.0, min(1.0, cloud_cover)) * 100))
         if hit is None:
             msg = (
                 "Không phát hiện mưa gần đây."
                 if lang == "vi"
                 else "No rain detected nearby."
             )
-            return self._empty_result(msg, lang, radar_timestamp, radar_age)
+            return self._empty_result(
+                msg, lang, radar_timestamp, radar_age, cloud_cover=cloud_cover
+            )
 
         distance = int(round(hit.distance_m))
         direction = compass_from_bearing(
@@ -1032,6 +1046,7 @@ class NearestRainService:
             intensity=hit.intensity,
             dbz=hit.dbz,
             support=hit.support,
+            cloud_cover=cloud_cover,
         )
 
         return NearestRainResponse(
@@ -1055,6 +1070,8 @@ class NearestRainService:
             raining_here=is_raining_here(distance, hit.dbz, hit.support),
             radar_timestamp=radar_timestamp,
             radar_age_minutes=radar_age,
+            sky_state=copy.sky_state,
+            cloud_cover_pct=cloud_pct,
         )
 
     def _frame_age(self, frame: RadarFrameSchema | None) -> tuple[str | None, int]:
@@ -1077,6 +1094,7 @@ class NearestRainService:
         lang: Lang = "vi",
         radar_timestamp: str | None = None,
         radar_age_minutes: int = 0,
+        cloud_cover: float = 0.0,
     ) -> NearestRainResponse:
         copy = build_advice(
             has_rain=False,
@@ -1088,13 +1106,21 @@ class NearestRainService:
             speed_kmh=0,
             previous_distance_m=None,
             lang=lang,
+            cloud_cover=cloud_cover,
         )
+        # Prefer cloud-aware copy unless the caller forced a hard failure message
+        use_explanation = explanation
+        if explanation in {
+            "Không phát hiện mưa gần đây.",
+            "No rain detected nearby.",
+        }:
+            use_explanation = copy.explanation
         return NearestRainResponse(
             distance=-1,
             eta=0,
             direction="N",
             confidence=0,
-            explanation=explanation or copy.explanation,
+            explanation=use_explanation or copy.explanation,
             advice=copy.advice,
             has_rain=False,
             rain_latitude=None,
@@ -1110,6 +1136,8 @@ class NearestRainService:
             raining_here=False,
             radar_timestamp=radar_timestamp,
             radar_age_minutes=radar_age_minutes,
+            sky_state=copy.sky_state,
+            cloud_cover_pct=int(round(max(0.0, min(1.0, cloud_cover)) * 100)),
         )
 
     def _read_cache(self, key: str) -> NearestRainResponse | None:
