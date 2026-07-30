@@ -8,6 +8,8 @@ import math
 import re
 from datetime import UTC, datetime, timedelta
 
+from dataclasses import dataclass
+
 import httpx
 from PIL import Image, ImageFilter
 
@@ -61,6 +63,18 @@ def _build_night_lut() -> list[int]:
 
 NIGHT_ALPHA_LUT = _build_night_lut()
 
+# Soft-tile alpha above this counts as cloud in the local sky sample
+CLOUD_ALPHA_FLOOR = 40
+CLOUDY_COVER = 0.32
+PARTLY_COVER = 0.15
+
+
+@dataclass(frozen=True, slots=True)
+class CloudCoverSample:
+    cover: float
+    mode: str
+    timestamp: str | None = None
+
 
 class CloudsService:
     async def get_clouds(self) -> CloudsResponse:
@@ -92,6 +106,67 @@ class CloudsService:
         )
         self._write_cache(response, upstream_template)
         return response
+
+    async def sample_cover(self, latitude: float, longitude: float) -> CloudCoverSample:
+        """Estimate cloud fraction over a ~10 km window from the soft Himawari tile."""
+        try:
+            meta = self._read_cache_meta()
+            if meta is None:
+                await self.get_clouds()
+                meta = self._read_cache_meta()
+            if meta is None:
+                return CloudCoverSample(cover=0.0, mode=self._local_mode())
+
+            mode = str(meta.get("mode") or self._local_mode())
+            timestamp = meta.get("timestamp")
+            max_zoom = DAY_MAX_ZOOM if mode == "day" else NIGHT_MAX_ZOOM
+            tile_x, tile_y, px, py = self._latlon_to_pixel(latitude, longitude, max_zoom)
+            soft = await self.get_soft_tile(max_zoom, tile_x, tile_y)
+            image = Image.open(io.BytesIO(soft)).convert("RGBA")
+            cover = self._alpha_cover(image, px, py, radius=5)
+            return CloudCoverSample(
+                cover=cover,
+                mode=mode,
+                timestamp=str(timestamp) if timestamp else None,
+            )
+        except Exception:
+            return CloudCoverSample(cover=0.0, mode=self._local_mode())
+
+    def _latlon_to_pixel(
+        self, lat: float, lon: float, zoom: int
+    ) -> tuple[int, int, int, int]:
+        scale = 2**zoom
+        lat_rad = math.radians(lat)
+        xt = (lon + 180.0) / 360.0 * scale
+        yt = (
+            (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi)
+            / 2.0
+            * scale
+        )
+        tile_x = int(xt)
+        tile_y = int(yt)
+        tile_x = max(0, min(scale - 1, tile_x))
+        tile_y = max(0, min(scale - 1, tile_y))
+        px = int((xt - tile_x) * 256)
+        py = int((yt - tile_y) * 256)
+        return tile_x, tile_y, max(0, min(255, px)), max(0, min(255, py))
+
+    def _alpha_cover(self, image: Image.Image, px: int, py: int, radius: int) -> float:
+        pixels = image.load()
+        width, height = image.size
+        cloudy = 0
+        total = 0
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                xx = min(width - 1, max(0, px + dx))
+                yy = min(height - 1, max(0, py + dy))
+                alpha = pixels[xx, yy][3]
+                total += 1
+                if alpha >= CLOUD_ALPHA_FLOOR:
+                    cloudy += 1
+        if total <= 0:
+            return 0.0
+        return cloudy / float(total)
 
     async def get_soft_tile(self, z: int, x: int, y: int) -> bytes:
         meta = self._read_cache_meta()
