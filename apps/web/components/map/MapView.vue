@@ -9,6 +9,11 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import type { RainVectorItem } from "@local-rain/shared";
 import type { LocationSource } from "~/types/location";
+import {
+  syncVietnamSovereigntyLabels,
+  VN_ISLAND_LAYER,
+  VN_SOVEREIGNTY_TEXT_FIELD,
+} from "~/utils/vietnamMapLabels";
 
 const RADAR_BUFFERS = [
   { sourceId: "radar-source-a", layerId: "radar-layer-a" },
@@ -463,6 +468,17 @@ function cloudBeforeId(instance: Map): string | undefined {
   return undefined;
 }
 
+function styleVietnamSovereigntyOverlay(instance: Map, satellite: boolean) {
+  if (!instance.getLayer(VN_ISLAND_LAYER)) return;
+  if (satellite) {
+    instance.setPaintProperty(VN_ISLAND_LAYER, "text-color", "#f8fafc");
+    instance.setPaintProperty(VN_ISLAND_LAYER, "text-halo-color", "rgba(2,6,23,0.9)");
+  } else {
+    instance.setPaintProperty(VN_ISLAND_LAYER, "text-color", "#0f172a");
+    instance.setPaintProperty(VN_ISLAND_LAYER, "text-halo-color", "rgba(255,255,255,0.92)");
+  }
+}
+
 function removeCloudLayer(instance: Map) {
   if (instance.getLayer(CLOUD_LAYER_ID)) {
     instance.removeLayer(CLOUD_LAYER_ID);
@@ -542,7 +558,7 @@ function syncSatelliteGeography(instance: Map) {
       "source-layer": "place",
       filter: ["in", ["get", "class"], ["literal", ["city", "country"]]],
       layout: {
-        "text-field": ["coalesce", ["get", "name:latin"], ["get", "name"]],
+        "text-field": VN_SOVEREIGNTY_TEXT_FIELD as never,
         "text-font": ["Noto Sans Regular"],
         "text-size": ["interpolate", ["linear"], ["zoom"], 3, 10, 7, 12.5, 11, 15],
         "text-max-width": 8,
@@ -557,6 +573,7 @@ function syncSatelliteGeography(instance: Map) {
     });
   } else {
     instance.setPaintProperty(SAT_LABEL_LAYER, "text-color", labelColor);
+    instance.setLayoutProperty(SAT_LABEL_LAYER, "text-field", VN_SOVEREIGNTY_TEXT_FIELD as never);
   }
 
   // Above the imagery, but still below the rain overlays.
@@ -566,6 +583,9 @@ function syncSatelliteGeography(instance: Map) {
   for (const layerId of SAT_GEO_LAYERS) {
     if (instance.getLayer(layerId)) instance.moveLayer(layerId, beforeId);
   }
+
+  styleVietnamSovereigntyOverlay(instance, dayMode);
+  syncVietnamSovereigntyLabels(instance, beforeId);
 }
 
 function syncNightUnderlay(instance: Map) {
@@ -688,6 +708,8 @@ function applyBasemapForMode() {
   syncRadarFrame();
   syncRainVectors();
   syncNearestRainOverlay();
+  syncVietnamSovereigntyLabels(instance);
+  styleVietnamSovereigntyOverlay(instance, Boolean(props.cloudMapMode));
 }
 
 function syncCursor() {
@@ -727,6 +749,8 @@ function initMap() {
     isReady.value = true;
     // Handle used by the scripts/e2e browser checks to assert layer state
     (window as unknown as { __lrMap?: Map }).__lrMap = instance;
+    syncVietnamSovereigntyLabels(instance);
+    styleVietnamSovereigntyOverlay(instance, Boolean(props.cloudMapMode));
     syncCloudLayer();
     syncRadarFrame();
     syncRainVectors();
