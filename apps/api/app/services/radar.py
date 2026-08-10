@@ -30,6 +30,14 @@ class RadarService:
         if cached is not None:
             return cached
 
+        # Serve stale frames immediately while RainViewer refresh runs in the background
+        stale = self._read_stale_cache()
+        if stale is not None and stale.frames:
+            import asyncio
+
+            asyncio.create_task(self._safe_refresh_frames())
+            return stale
+
         payload = await self._fetch_rainviewer()
         response, upstreams = self._to_response(payload)
         if not response.frames:
@@ -38,6 +46,15 @@ class RadarService:
                 return stale
         self._write_cache(response, upstreams)
         return response
+
+    async def _safe_refresh_frames(self) -> None:
+        try:
+            payload = await self._fetch_rainviewer()
+            response, upstreams = self._to_response(payload)
+            if response.frames:
+                self._write_cache(response, upstreams)
+        except Exception:
+            return
 
     async def upstream_for_frame(self, unix_time: int) -> str:
         upstreams = self._read_upstreams()

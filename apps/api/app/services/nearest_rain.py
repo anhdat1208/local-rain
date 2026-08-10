@@ -165,7 +165,7 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v19:{locale}:{current.unix_time}:"
+            f"nearest-rain:v20:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
@@ -205,7 +205,9 @@ class NearestRainService:
         result = self._build_response(
             latitude, longitude, current_hit, motion, locale, current, clouds
         )
-        self._write_cache(cache_key, result)
+        # Don't lock a "clear sky" answer for 2 minutes when cloud sample never ran
+        if clouds.ok:
+            self._write_cache(cache_key, result)
         return result
 
     async def find_vectors(
@@ -481,7 +483,14 @@ class NearestRainService:
         older.sort(key=lambda frame: frame.unix_time, reverse=True)
 
         baselines: list[tuple[RadarFrameSchema, dict[tuple[int, int], float]]] = []
-        for frame in older[:MOTION_MAX_FRAME_TRIES]:
+        # Prefetch several past frames in parallel, then pick ones that actually changed
+        candidates = older[:MOTION_MAX_FRAME_TRIES]
+        if not candidates:
+            return []
+
+        async def load_frame(
+            frame: RadarFrameSchema,
+        ) -> tuple[RadarFrameSchema, dict[tuple[int, int], float]] | None:
             upstream = await self._radar_service.upstream_for_frame(frame.unix_time)
             field = await self._collect_field(
                 client=client,
@@ -491,7 +500,14 @@ class NearestRainService:
                 radius_m=radius_m,
             )
             if not field:
+                return None
+            return frame, field
+
+        loaded = await asyncio.gather(*(load_frame(frame) for frame in candidates))
+        for item in loaded:
+            if item is None:
                 continue
+            frame, field = item
             unchanged = sum(
                 min(dbz, field[key]) - DETECT_MIN_DBZ + 1.0
                 for key, dbz in current_field.items()
@@ -699,15 +715,21 @@ class NearestRainService:
         best: RainHit | None = None
 
         for radius in range(0, max_radius + 1):
-            for tile_x, tile_y in self._tiles_for_ring(origin_tile_x, origin_tile_y, radius):
-                hit = await self._scan_tile(
-                    client=client,
-                    tile_url_template=tile_url_template,
-                    tile_x=tile_x,
-                    tile_y=tile_y,
-                    ref_lat=ref_lat,
-                    ref_lon=ref_lon,
+            tiles = self._tiles_for_ring(origin_tile_x, origin_tile_y, radius)
+            hits = await asyncio.gather(
+                *(
+                    self._scan_tile(
+                        client=client,
+                        tile_url_template=tile_url_template,
+                        tile_x=tile_x,
+                        tile_y=tile_y,
+                        ref_lat=ref_lat,
+                        ref_lon=ref_lon,
+                    )
+                    for tile_x, tile_y in tiles
                 )
+            )
+            for hit in hits:
                 if hit is None:
                     continue
                 if self._is_better_hit(hit, best):

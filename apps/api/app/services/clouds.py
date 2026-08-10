@@ -18,7 +18,9 @@ from app.core.redis import get_redis
 from app.schemas.clouds import CloudsResponse
 
 CACHE_KEY = "clouds:himawari:v19"
+STALE_CACHE_KEY = "clouds:himawari:stale:v19"
 CACHE_TTL_SECONDS = 180
+STALE_CACHE_TTL_SECONDS = 2 * 60 * 60
 TILE_CACHE_TTL_SECONDS = 300
 TRANSPARENT_PNG: bytes | None = None
 
@@ -74,6 +76,7 @@ class CloudCoverSample:
     cover: float
     mode: str
     timestamp: str | None = None
+    ok: bool = True
 
 
 class CloudsService:
@@ -82,6 +85,21 @@ class CloudsService:
         if cached is not None:
             return cached
 
+        # Stale-while-revalidate: serve previous meta immediately if present, refresh in background
+        stale = self._read_stale_cache()
+        if stale is not None:
+            asyncio.create_task(self._safe_refresh_clouds_meta())
+            return stale
+
+        return await self._refresh_clouds_meta()
+
+    async def _safe_refresh_clouds_meta(self) -> None:
+        try:
+            await self._refresh_clouds_meta()
+        except Exception:
+            return
+
+    async def _refresh_clouds_meta(self) -> CloudsResponse:
         mode = self._local_mode()
         layer_id, matrix, max_zoom = (
             (DAY_LAYER, DAY_MATRIX, DAY_MAX_ZOOM)
@@ -112,10 +130,9 @@ class CloudsService:
         try:
             meta = self._read_cache_meta()
             if meta is None:
-                await self.get_clouds()
-                meta = self._read_cache_meta()
-            if meta is None:
-                return CloudCoverSample(cover=0.0, mode=self._local_mode())
+                # Don't block nearest-rain on a full GIBS probe — warm meta in background
+                asyncio.create_task(self._safe_refresh_clouds_meta())
+                return CloudCoverSample(cover=0.0, mode=self._local_mode(), ok=False)
 
             mode = str(meta.get("mode") or self._local_mode())
             timestamp = meta.get("timestamp")
@@ -128,9 +145,10 @@ class CloudsService:
                 cover=cover,
                 mode=mode,
                 timestamp=str(timestamp) if timestamp else None,
+                ok=True,
             )
         except Exception:
-            return CloudCoverSample(cover=0.0, mode=self._local_mode())
+            return CloudCoverSample(cover=0.0, mode=self._local_mode(), ok=False)
 
     def _latlon_to_pixel(
         self, lat: float, lon: float, zoom: int
@@ -333,16 +351,26 @@ class CloudsService:
             for step in range(FRAME_PROBE_STEPS)
         ]
 
-        # Sequential and newest-first: GIBS' flaky 404s would otherwise make a
-        # published frame look missing and push the whole view further into the past.
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            for stamp in candidates:
-                url = (
-                    "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
-                    f"{layer_id}/default/{stamp}/{matrix}/{max_zoom}/{tile_y}/{tile_x}.png"
-                )
-                if await self._get_tile_bytes(client, url, attempts=2) is not None:
-                    return stamp
+        # Probe newest-first in small parallel batches — same correctness as sequential
+        # (we still pick the newest success) but much faster on cold start.
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            batch_size = 4
+            for start in range(0, len(candidates), batch_size):
+                batch = candidates[start : start + batch_size]
+
+                async def probe_one(stamp: str) -> str | None:
+                    url = (
+                        "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
+                        f"{layer_id}/default/{stamp}/{matrix}/{max_zoom}/{tile_y}/{tile_x}.png"
+                    )
+                    if await self._get_tile_bytes(client, url, attempts=2) is not None:
+                        return stamp
+                    return None
+
+                results = await asyncio.gather(*(probe_one(stamp) for stamp in batch))
+                for stamp, hit in zip(batch, results, strict=True):
+                    if hit is not None:
+                        return stamp
         return None
 
     def _reference_tile(self, zoom: int) -> tuple[int, int]:
@@ -399,32 +427,50 @@ class CloudsService:
         except Exception:
             return None
 
+    def _read_stale_cache(self) -> CloudsResponse | None:
+        try:
+            raw = get_redis().get(STALE_CACHE_KEY)
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            meta = json.loads(raw)
+            return CloudsResponse.model_validate(meta["response"])
+        except Exception:
+            return None
+
     def _read_cache_meta(self) -> dict | None:
         try:
             raw = get_redis().get(CACHE_KEY)
         except Exception:
             return None
         if not raw:
-            return None
+            # Fall back to stale meta so soft tiles / sample_cover still work during refresh
+            try:
+                raw = get_redis().get(STALE_CACHE_KEY)
+            except Exception:
+                return None
+            if not raw:
+                return None
         try:
             return json.loads(raw)
         except Exception:
             return None
 
     def _write_cache(self, payload: CloudsResponse, upstream_template: str) -> None:
+        blob = json.dumps(
+            {
+                "response": payload.model_dump(by_alias=True),
+                "upstream": upstream_template,
+                "mode": payload.mode,
+                "timestamp": payload.timestamp,
+            }
+        )
         try:
-            get_redis().setex(
-                CACHE_KEY,
-                CACHE_TTL_SECONDS,
-                json.dumps(
-                    {
-                        "response": payload.model_dump(by_alias=True),
-                        "upstream": upstream_template,
-                        "mode": payload.mode,
-                        "timestamp": payload.timestamp,
-                    }
-                ),
-            )
+            redis = get_redis()
+            redis.setex(CACHE_KEY, CACHE_TTL_SECONDS, blob)
+            redis.setex(STALE_CACHE_KEY, STALE_CACHE_TTL_SECONDS, blob)
         except Exception:
             return
 

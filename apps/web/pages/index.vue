@@ -17,12 +17,10 @@ const { store: nearestStore, fetchNearestRain } = useNearestRain();
 const { vectors: rainVectors, fetchRainVectors } = useRainVectors();
 const RADAR_REFRESH_MS = 2 * 60 * 1000;
 const CLOUD_REFRESH_MS = 5 * 60 * 1000;
-const NEAREST_REFRESH_MS = 75 * 1000;
-const VECTOR_REFRESH_MS = 90 * 1000;
+const NEAREST_REFRESH_MS = 45 * 1000;
 let radarTimer: ReturnType<typeof setInterval> | null = null;
 let cloudTimer: ReturnType<typeof setInterval> | null = null;
 let nearestTimer: ReturnType<typeof setInterval> | null = null;
-let vectorTimer: ReturnType<typeof setInterval> | null = null;
 
 const mapLatitude = computed(() => store.latitude ?? fallbackCoords.latitude);
 const mapLongitude = computed(() => store.longitude ?? fallbackCoords.longitude);
@@ -56,9 +54,13 @@ const sheetSubtitle = computed(() => {
 });
 
 async function refreshNearestRain() {
-  if (store.latitude == null || store.longitude == null) return;
-  await fetchNearestRain(store.latitude, store.longitude);
-  await fetchRainVectors(store.latitude, store.longitude);
+  const lat = store.latitude ?? fallbackCoords.latitude;
+  const lng = store.longitude ?? fallbackCoords.longitude;
+  await Promise.all([fetchNearestRain(lat, lng), fetchRainVectors(lat, lng)]);
+}
+
+async function refreshWeatherData() {
+  await Promise.all([fetchRadar(), fetchClouds(), refreshNearestRain()]);
 }
 
 async function locateAndCenter() {
@@ -144,7 +146,6 @@ function startRealtimeRefresh() {
   if (radarTimer) clearInterval(radarTimer);
   if (cloudTimer) clearInterval(cloudTimer);
   if (nearestTimer) clearInterval(nearestTimer);
-  if (vectorTimer) clearInterval(vectorTimer);
 
   radarTimer = setInterval(() => {
     void fetchRadar();
@@ -155,23 +156,39 @@ function startRealtimeRefresh() {
   nearestTimer = setInterval(() => {
     void refreshNearestRain();
   }, NEAREST_REFRESH_MS);
-  vectorTimer = setInterval(() => {
-    if (store.latitude == null || store.longitude == null) return;
-    void fetchRainVectors(store.latitude, store.longitude);
-  }, VECTOR_REFRESH_MS);
 }
 
-onMounted(async () => {
-  await requestLocation();
-  await Promise.all([fetchRadar(), fetchClouds(), refreshNearestRain()]);
-  startRealtimeRefresh();
+onMounted(() => {
+  // Show loading immediately so the card doesn't flash "dry/clear"
+  nearestStore.setLoading(true);
+
+  // Kick weather fetches immediately with last-known / fallback coords while GPS runs
+  void refreshWeatherData().then(() => startRealtimeRefresh());
+
+  void (async () => {
+    const prevLat = store.latitude;
+    const prevLng = store.longitude;
+    await requestLocation();
+    // Refetch once if GPS moved meaningfully from the seed coords
+    const lat = store.latitude;
+    const lng = store.longitude;
+    if (
+      lat != null &&
+      lng != null &&
+      (prevLat == null ||
+        prevLng == null ||
+        Math.abs(lat - prevLat) > 0.002 ||
+        Math.abs(lng - prevLng) > 0.002)
+    ) {
+      await refreshNearestRain();
+    }
+  })();
 });
 
 onBeforeUnmount(() => {
   if (radarTimer) clearInterval(radarTimer);
   if (cloudTimer) clearInterval(cloudTimer);
   if (nearestTimer) clearInterval(nearestTimer);
-  if (vectorTimer) clearInterval(vectorTimer);
 });
 </script>
 
@@ -254,7 +271,7 @@ onBeforeUnmount(() => {
         <RainCard
           v-if="!cloudsStore.mapMode"
           class="lr-fade-up"
-          :loading="nearestStore.loading"
+          :loading="nearestStore.loading || store.loading"
           :has-rain="nearestStore.hasRain"
           :distance-label="nearestStore.distanceLabel"
           :direction="nearestStore.direction"

@@ -12,18 +12,19 @@ export function useClouds() {
     store.setLoading(true);
     store.setError(null);
     let lastError: unknown = null;
-    const maxAttempts = 3;
+    // First paint: fail fast (2 tries). Background refresh can retry more later.
+    const maxAttempts = store.tileUrlTemplate ? 3 : 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         const data = await apiFetch<CloudsResponse>("/api/clouds", {
-          timeout: 10_000,
+          timeout: store.tileUrlTemplate ? 10_000 : 8_000,
         });
         store.setPayload(data);
         return;
       } catch (error) {
         lastError = error;
         if (attempt < maxAttempts) {
-          await delay(350 * attempt);
+          await delay(200 * attempt);
         }
       }
     }
