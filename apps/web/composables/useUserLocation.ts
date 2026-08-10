@@ -21,9 +21,9 @@ export function useUserLocation() {
   const { apiFetch } = useApiClient();
 
   const { coords, error: geoError, resume, pause } = useGeolocation({
-    enableHighAccuracy: true,
-    maximumAge: 10_000,
-    timeout: 15_000,
+    enableHighAccuracy: false,
+    maximumAge: 60_000,
+    timeout: 8_000,
     immediate: false,
   });
 
@@ -66,7 +66,9 @@ export function useUserLocation() {
   async function applyFallback(message: string): Promise<void> {
     store.setError(message);
     store.setCoords(FALLBACK_COORDS, "fallback");
-    await resolveLabel(FALLBACK_COORDS.latitude, FALLBACK_COORDS.longitude);
+    // Label is not on the critical path — resolve in background
+    void resolveLabel(FALLBACK_COORDS.latitude, FALLBACK_COORDS.longitude);
+    store.setLoading(false);
   }
 
   async function setManualLocation(latitude: number, longitude: number): Promise<void> {
@@ -81,14 +83,40 @@ export function useUserLocation() {
       },
       "manual",
     );
-    await resolveLabel(latitude, longitude);
     store.setLoading(false);
+    void resolveLabel(latitude, longitude);
   }
 
   async function requestLocation(): Promise<void> {
     store.setLoading(true);
     store.setError(null);
     store.resetLabel();
+
+    // Seed last-known coords immediately so rain/radar can start without waiting GPS
+    if (import.meta.client) {
+      try {
+        const raw = window.localStorage.getItem("lr:lastCoords");
+        if (raw) {
+          const parsed = JSON.parse(raw) as { latitude?: number; longitude?: number };
+          if (
+            Number.isFinite(parsed.latitude) &&
+            Number.isFinite(parsed.longitude) &&
+            store.latitude == null
+          ) {
+            store.setCoords(
+              {
+                latitude: parsed.latitude as number,
+                longitude: parsed.longitude as number,
+                accuracy: null,
+              },
+              "fallback",
+            );
+          }
+        }
+      } catch {
+        // ignore corrupt cache
+      }
+    }
 
     const permission = await detectPermission();
     if (permission === "unsupported") {
@@ -107,12 +135,13 @@ export function useUserLocation() {
     await new Promise<void>((resolve) => {
       let settled = false;
 
-      const finish = async (fn: () => Promise<void>) => {
+      const finish = async (fn: () => Promise<void> | void) => {
         if (settled) return;
         settled = true;
         stopWatch();
         window.clearTimeout(timeoutId);
         await fn();
+        store.setLoading(false);
         resolve();
       };
 
@@ -134,7 +163,7 @@ export function useUserLocation() {
             Number.isFinite(nextCoords.latitude) &&
             Number.isFinite(nextCoords.longitude)
           ) {
-            await finish(async () => {
+            await finish(() => {
               store.setPermission("granted");
               store.setCoords(
                 {
@@ -144,17 +173,34 @@ export function useUserLocation() {
                 },
                 "gps",
               );
-              await resolveLabel(nextCoords.latitude, nextCoords.longitude);
+              try {
+                window.localStorage.setItem(
+                  "lr:lastCoords",
+                  JSON.stringify({
+                    latitude: nextCoords.latitude,
+                    longitude: nextCoords.longitude,
+                  }),
+                );
+              } catch {
+                // quota / private mode
+              }
+              void resolveLabel(nextCoords.latitude, nextCoords.longitude);
             });
           }
         })();
       });
 
+      // Fail fast to last-known / HCMC so rain can load; don't wait full 16s
       const timeoutId = window.setTimeout(() => {
         void finish(async () => {
+          if (store.latitude != null && store.longitude != null) {
+            // Already have last-known coords — keep them, just stop waiting
+            store.setError(null);
+            return;
+          }
           await applyFallback(t("errors.geoTimeout"));
         });
-      }, 16_000);
+      }, 4_500);
     });
   }
 
