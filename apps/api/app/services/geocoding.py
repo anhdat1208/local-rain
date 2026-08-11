@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import httpx
-
 from app.core.config import get_settings
+from app.core.http_client import get_http_client
 
 
 class GeocodingService:
@@ -23,10 +22,12 @@ class GeocodingService:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(self.NOMINATIM_URL, params=params, headers=headers)
-                response.raise_for_status()
-                payload = response.json()
+            client = get_http_client()
+            response = await client.get(
+                self.NOMINATIM_URL, params=params, headers=headers, timeout=5.0
+            )
+            response.raise_for_status()
+            payload = response.json()
         except Exception:
             return self._fallback_label(latitude, longitude)
 

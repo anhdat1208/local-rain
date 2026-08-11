@@ -127,5 +127,5 @@ def filter_tile_below_dbz(png_bytes: bytes, min_dbz: float = MAP_MIN_DBZ) -> byt
             alpha = min(255, max(135, int(150 + boost * 105)))
             pixels[x, y] = (nr, ng, nb, alpha)
     out = io.BytesIO()
-    image.save(out, format="PNG", optimize=True)
+    image.save(out, format="PNG", compress_level=3)
     return out.getvalue()

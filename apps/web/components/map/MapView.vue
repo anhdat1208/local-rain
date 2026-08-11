@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import maplibregl, {
-  type Map,
-  type MapSourceDataEvent,
-  type Marker,
-  type RasterTileSource,
+import type {
+  GeoJSONSource,
+  Map,
+  MapSourceDataEvent,
+  Marker,
+  RasterTileSource,
 } from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
 
 import type { RainVectorItem } from "@local-rain/shared";
 import type { LocationSource } from "~/types/location";
@@ -14,6 +14,9 @@ import {
   VN_ISLAND_LAYER,
   VN_SOVEREIGNTY_TEXT_FIELD,
 } from "~/utils/vietnamMapLabels";
+
+type MapLibreModule = typeof import("maplibre-gl");
+let maplibregl: MapLibreModule["default"] | null = null;
 
 const RADAR_BUFFERS = [
   { sourceId: "radar-source-a", layerId: "radar-layer-a" },
@@ -204,7 +207,7 @@ function syncRainVectors() {
     }),
   };
 
-  const existing = instance.getSource(RAIN_VECTOR_SOURCE) as maplibregl.GeoJSONSource | undefined;
+  const existing = instance.getSource(RAIN_VECTOR_SOURCE) as GeoJSONSource | undefined;
   if (existing) {
     existing.setData(geojson);
     return;
@@ -264,6 +267,7 @@ function syncNearestRainOverlay() {
   const rainLngLat: [number, number] = [props.rainLongitude!, props.rainLatitude!];
 
   if (!rainMarker.value) {
+    if (!maplibregl) return;
     rainMarker.value = new maplibregl.Marker({
       element: createRainMarkerElement(),
       anchor: "center",
@@ -286,7 +290,7 @@ function syncNearestRainOverlay() {
     },
   };
 
-  const existing = instance.getSource(RAIN_LINE_SOURCE) as maplibregl.GeoJSONSource | undefined;
+  const existing = instance.getSource(RAIN_LINE_SOURCE) as GeoJSONSource | undefined;
   if (existing) {
     existing.setData(lineData);
   } else {
@@ -721,58 +725,73 @@ function syncCursor() {
 function initMap() {
   if (!containerRef.value || map.value) return;
 
-  const instance = new maplibregl.Map({
-    container: containerRef.value,
-    style: BASEMAP_STYLE,
-    center: [props.longitude, props.latitude],
-    zoom: props.zoom,
-    attributionControl: { compact: true },
-    transformRequest: (url) => {
-      if (!needsNgrokBypass(url)) return { url };
-      return {
-        url,
-        headers: withNgrokHeaders(url),
-      };
-    },
-  });
+  void (async () => {
+    if (!maplibregl) {
+      const mod = await import("maplibre-gl");
+      await import("maplibre-gl/dist/maplibre-gl.css");
+      maplibregl = mod.default;
+    }
+    if (!containerRef.value || map.value || disposed) return;
 
-  instance.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-
-  const userMarker = new maplibregl.Marker({
-    element: createUserMarkerElement(),
-    anchor: "center",
-  })
-    .setLngLat([props.longitude, props.latitude])
-    .addTo(instance);
-
-  instance.on("load", () => {
-    isReady.value = true;
-    // Handle used by the scripts/e2e browser checks to assert layer state
-    (window as unknown as { __lrMap?: Map }).__lrMap = instance;
-    syncVietnamSovereigntyLabels(instance);
-    styleVietnamSovereigntyOverlay(instance, Boolean(props.cloudMapMode));
-    syncCloudLayer();
-    syncRadarFrame();
-    syncRainVectors();
-    syncNearestRainOverlay();
-    syncCursor();
-    emit("ready", instance);
-  });
-
-  instance.on("zoomend", () => syncRainVectors());
-  instance.on("dragstart", () => emit("userinteract"));
-  instance.on("zoomstart", (event) => {
-    if (event.originalEvent) emit("userinteract");
-  });
-  instance.on("click", (event) => {
-    emit("mapclick", {
-      latitude: event.lngLat.lat,
-      longitude: event.lngLat.lng,
+    const instance = new maplibregl.Map({
+      container: containerRef.value,
+      style: BASEMAP_STYLE,
+      center: [props.longitude, props.latitude],
+      zoom: props.zoom,
+      attributionControl: { compact: true },
+      maxTileCacheSize: 80,
+      fadeDuration: 0,
+      cancelPendingTileRequestsWhileZooming: true,
+      transformRequest: (url) => {
+        if (!needsNgrokBypass(url)) return { url };
+        return {
+          url,
+          headers: withNgrokHeaders(url),
+        };
+      },
     });
-  });
 
-  map.value = instance;
-  marker.value = userMarker;
+    instance.on("load", () => {
+      if (disposed) return;
+      isReady.value = true;
+      // Handle used by the scripts/e2e browser checks to assert layer state
+      (window as unknown as { __lrMap?: Map }).__lrMap = instance;
+      instance.addControl(
+        new maplibregl!.NavigationControl({ showCompass: false }),
+        "top-right",
+      );
+      syncVietnamSovereigntyLabels(instance);
+      styleVietnamSovereigntyOverlay(instance, Boolean(props.cloudMapMode));
+      syncCloudLayer();
+      syncRadarFrame();
+      syncRainVectors();
+      syncNearestRainOverlay();
+      syncCursor();
+      emit("ready", instance);
+    });
+
+    instance.on("zoomend", () => syncRainVectors());
+    instance.on("dragstart", () => emit("userinteract"));
+    instance.on("zoomstart", (event) => {
+      if (event.originalEvent) emit("userinteract");
+    });
+    instance.on("click", (event) => {
+      emit("mapclick", {
+        latitude: event.lngLat.lat,
+        longitude: event.lngLat.lng,
+      });
+    });
+
+    const userMarker = new maplibregl.Marker({
+      element: createUserMarkerElement(),
+      anchor: "center",
+    })
+      .setLngLat([props.longitude, props.latitude])
+      .addTo(instance);
+
+    map.value = instance;
+    marker.value = userMarker;
+  })();
 }
 
 function flyToUser(latitude: number, longitude: number) {
