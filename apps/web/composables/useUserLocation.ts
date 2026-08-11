@@ -11,6 +11,13 @@ const FALLBACK_COORDS = {
 };
 
 const LAST_COORDS_KEY = "lr:lastCoords";
+const LAST_LABEL_KEY = "lr:lastLabel";
+
+type CachedLabel = {
+  latitude: number;
+  longitude: number;
+  label: string;
+};
 
 function readLastKnownCoords(): { latitude: number; longitude: number } | null {
   if (!import.meta.client) return null;
@@ -30,6 +37,45 @@ function readLastKnownCoords(): { latitude: number; longitude: number } | null {
   return null;
 }
 
+function readCachedLabel(latitude: number, longitude: number): string | null {
+  if (!import.meta.client) return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_LABEL_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedLabel;
+    if (
+      typeof parsed.label === "string" &&
+      parsed.label.trim() &&
+      Number.isFinite(parsed.latitude) &&
+      Number.isFinite(parsed.longitude) &&
+      Math.abs(parsed.latitude - latitude) < 0.002 &&
+      Math.abs(parsed.longitude - longitude) < 0.002 &&
+      !isCoordinateLabel(parsed.label)
+    ) {
+      return parsed.label.trim();
+    }
+  } catch {
+    // ignore corrupt cache
+  }
+  return null;
+}
+
+function writeCachedLabel(latitude: number, longitude: number, label: string): void {
+  if (!import.meta.client || isCoordinateLabel(label)) return;
+  try {
+    const payload: CachedLabel = { latitude, longitude, label };
+    window.localStorage.setItem(LAST_LABEL_KEY, JSON.stringify(payload));
+  } catch {
+    // quota / private mode
+  }
+}
+
+function isCoordinateLabel(label: string): boolean {
+  const parts = label.split(",").map((p) => p.trim());
+  if (parts.length !== 2) return false;
+  return parts.every((p) => Number.isFinite(Number(p)));
+}
+
 function mapPermission(state: PermissionState | "unsupported"): GeolocationPermissionState {
   if (state === "unsupported") return "unsupported";
   return state;
@@ -37,8 +83,9 @@ function mapPermission(state: PermissionState | "unsupported"): GeolocationPermi
 
 export function useUserLocation() {
   const store = useLocationStore();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { apiFetch } = useApiClient();
+  let labelRequestId = 0;
 
   const { coords, error: geoError, resume, pause } = useGeolocation({
     enableHighAccuracy: false,
@@ -47,9 +94,27 @@ export function useUserLocation() {
     immediate: false,
   });
 
+  function pendingLabel(): string {
+    return t("sheet.resolvingPlace");
+  }
+
+  function applyOptimisticLabel(latitude: number, longitude: number): void {
+    const cached = readCachedLabel(latitude, longitude);
+    if (cached) {
+      store.setLabel(cached);
+      return;
+    }
+    if (!store.label || store.label === "Finding location…" || isCoordinateLabel(store.label)) {
+      store.setLabel(pendingLabel());
+    }
+  }
+
   /** Sync seed so weather can start before GPS — call before kickoff fetches. */
   function seedLastKnownCoords(): boolean {
-    if (store.latitude != null && store.longitude != null) return true;
+    if (store.latitude != null && store.longitude != null) {
+      applyOptimisticLabel(store.latitude, store.longitude);
+      return true;
+    }
     const last = readLastKnownCoords();
     if (!last) return false;
     store.setCoords(
@@ -60,6 +125,9 @@ export function useUserLocation() {
       },
       "fallback",
     );
+    applyOptimisticLabel(last.latitude, last.longitude);
+    // Warm reverse-geocode immediately — don't wait for GPS settle
+    void resolveLabel(last.latitude, last.longitude);
     return true;
   }
 
@@ -88,22 +156,68 @@ export function useUserLocation() {
     }
   }
 
-  async function resolveLabel(latitude: number, longitude: number): Promise<void> {
-    try {
-      const data = await apiFetch<LocationResponse>("/api/location", {
-        query: { lat: latitude, lng: longitude },
-        timeout: 5_000,
+  async function resolveLabel(
+    latitude: number,
+    longitude: number,
+    opts?: { attempt?: number },
+  ): Promise<void> {
+    const attempt = opts?.attempt ?? 0;
+    const requestId = ++labelRequestId;
+    const cached = readCachedLabel(latitude, longitude);
+    if (cached) {
+      store.setLabel(cached);
+    } else if (!store.label || isCoordinateLabel(store.label)) {
+      store.setLabel(pendingLabel());
+    }
+
+    const lang = locale.value === "en" ? "en" : "vi";
+
+    const fetchOnce = () =>
+      apiFetch<LocationResponse>("/api/location", {
+        query: { lat: latitude, lng: longitude, lang },
+        timeout: 6_000,
       });
+
+    const scheduleRetry = () => {
+      if (attempt >= 2) return;
+      window.setTimeout(() => {
+        void resolveLabel(latitude, longitude, { attempt: attempt + 1 });
+      }, 2_500 * (attempt + 1));
+    };
+
+    try {
+      let data: LocationResponse;
+      try {
+        data = await fetchOnce();
+      } catch {
+        // One quick retry — Nominatim is often cold on the first hit
+        data = await fetchOnce();
+      }
+      if (requestId !== labelRequestId) return;
+      if (isCoordinateLabel(data.label)) {
+        // Keep cached / pending text instead of flashing raw coords
+        if (!cached) store.setLabel(pendingLabel());
+        scheduleRetry();
+        return;
+      }
       store.setLabel(data.label);
+      writeCachedLabel(latitude, longitude, data.label);
     } catch {
-      store.setLabel(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+      if (requestId !== labelRequestId) return;
+      // Prefer last good name over ugly coordinate fallback
+      if (cached) {
+        store.setLabel(cached);
+        return;
+      }
+      store.setLabel(pendingLabel());
+      scheduleRetry();
     }
   }
 
   async function applyFallback(message: string): Promise<void> {
     store.setError(message);
     store.setCoords(FALLBACK_COORDS, "fallback");
-    // Label is not on the critical path — resolve in background
+    applyOptimisticLabel(FALLBACK_COORDS.latitude, FALLBACK_COORDS.longitude);
     void resolveLabel(FALLBACK_COORDS.latitude, FALLBACK_COORDS.longitude);
     store.setLoading(false);
   }
@@ -120,6 +234,7 @@ export function useUserLocation() {
       },
       "manual",
     );
+    applyOptimisticLabel(latitude, longitude);
     store.setLoading(false);
     void resolveLabel(latitude, longitude);
   }
@@ -127,8 +242,10 @@ export function useUserLocation() {
   async function requestLocation(): Promise<void> {
     store.setLoading(true);
     store.setError(null);
-    store.resetLabel();
     seedLastKnownCoords();
+    if (store.latitude == null || store.longitude == null) {
+      store.resetLabel(pendingLabel());
+    }
 
     const permission = await detectPermission();
     if (permission === "unsupported") {
@@ -196,6 +313,7 @@ export function useUserLocation() {
               } catch {
                 // quota / private mode
               }
+              applyOptimisticLabel(nextCoords.latitude, nextCoords.longitude);
               void resolveLabel(nextCoords.latitude, nextCoords.longitude);
             });
           }
@@ -206,8 +324,10 @@ export function useUserLocation() {
       const timeoutId = window.setTimeout(() => {
         void finish(async () => {
           if (store.latitude != null && store.longitude != null) {
-            // Already have last-known coords — keep them, just stop waiting
+            // Keep seed coords — still resolve a place name if missing
             store.setError(null);
+            applyOptimisticLabel(store.latitude, store.longitude);
+            void resolveLabel(store.latitude, store.longitude);
             return;
           }
           await applyFallback(t("errors.geoTimeout"));
@@ -230,4 +350,3 @@ export function useUserLocation() {
     fallbackCoords: FALLBACK_COORDS,
   };
 }
-
