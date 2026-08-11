@@ -8,7 +8,7 @@ from app.core.config import get_settings
 from app.core.database import dispose_engine
 from app.core.http_client import close_http_client, get_http_client
 from app.core.redis import close_redis
-from app.routers import clouds, health, location, nearest_rain, radar
+from app.routers import assistant, clouds, health, location, nearest_rain, radar
 
 
 @asynccontextmanager
@@ -57,6 +57,7 @@ def create_app() -> FastAPI:
     application.include_router(radar.router, prefix="/api")
     application.include_router(clouds.router, prefix="/api")
     application.include_router(nearest_rain.router, prefix="/api")
+    application.include_router(assistant.router, prefix="/api")
 
     @application.get("/")
     def root() -> dict[str, str]:

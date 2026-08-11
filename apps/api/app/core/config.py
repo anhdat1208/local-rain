@@ -32,6 +32,13 @@ class Settings(BaseSettings):
         default="http://localhost:8000",
         validation_alias=AliasChoices("PUBLIC_API_BASE", "public_api_base"),
     )
+    gemini_api_key: str | None = Field(default=None, validation_alias="GEMINI_API_KEY")
+    gemini_model: str = Field(default="gemini-3.6-flash", validation_alias="GEMINI_MODEL")
+    assistant_rate_limit: int = Field(default=20, validation_alias="ASSISTANT_RATE_LIMIT")
+    assistant_rate_window_seconds: int = Field(
+        default=300,
+        validation_alias="ASSISTANT_RATE_WINDOW",
+    )
 
     @property
     def cors_origin_list(self) -> list[str]:

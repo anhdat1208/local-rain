@@ -16,6 +16,8 @@ const { store: radarStore, fetchRadar } = useRadar();
 const { store: cloudsStore, fetchClouds } = useClouds();
 const { store: nearestStore, fetchNearestRain } = useNearestRain();
 const { vectors: rainVectors, fetchRainVectors } = useRainVectors();
+const { open: assistantOpen, toggle: toggleAssistant } = useAssistant();
+const assistantHighlight = ref<{ latitude: number; longitude: number } | null>(null);
 const RADAR_REFRESH_MS = 2 * 60 * 1000;
 const CLOUD_REFRESH_MS = 5 * 60 * 1000;
 const NEAREST_REFRESH_MS = 60 * 1000;
@@ -27,6 +29,12 @@ let visibilityHandler: (() => void) | null = null;
 
 const mapLatitude = computed(() => store.latitude ?? fallbackCoords.latitude);
 const mapLongitude = computed(() => store.longitude ?? fallbackCoords.longitude);
+const displayRainLatitude = computed(
+  () => assistantHighlight.value?.latitude ?? nearestStore.rainLatitude,
+);
+const displayRainLongitude = computed(
+  () => assistantHighlight.value?.longitude ?? nearestStore.rainLongitude,
+);
 const radarTileUrl = computed(() =>
   cloudsStore.mapMode ? null : radarStore.activeFrame?.tileUrlTemplate ?? null,
 );
@@ -112,6 +120,35 @@ function togglePickMode() {
   if (pickMode.value) {
     followUser.value = false;
   }
+}
+
+function onAssistantHighlight(lat: number, lng: number) {
+  assistantHighlight.value = { latitude: lat, longitude: lng };
+  nextTick(() => {
+    mapRef.value?.flyToStreetView(lat, lng, 11);
+  });
+}
+
+function onAssistantClose() {
+  toggleAssistant();
+  assistantHighlight.value = null;
+}
+
+function buildAssistantContext() {
+  const lang = locale.value === "en" ? "en" : "vi";
+  const ctx: import("@local-rain/shared").AssistantSessionContext = {
+    latitude: mapLatitude.value,
+    longitude: mapLongitude.value,
+    lang,
+    radarTimestamp: nearestStore.radarTimestamp,
+  };
+  if (nearestStore.rainLatitude != null && nearestStore.rainLongitude != null) {
+    ctx.selectedCell = {
+      latitude: nearestStore.rainLatitude,
+      longitude: nearestStore.rainLongitude,
+    };
+  }
+  return ctx;
 }
 
 async function onMapClick(point: { latitude: number; longitude: number }) {
@@ -269,8 +306,8 @@ onBeforeUnmount(() => {
         :cloud-map-mode="cloudsStore.mapMode"
         :cloud-day-mode="cloudsStore.isDayMode"
         :rain-vectors="cloudsStore.mapMode ? [] : rainVectors"
-        :rain-latitude="cloudsStore.mapMode ? null : nearestStore.rainLatitude"
-        :rain-longitude="cloudsStore.mapMode ? null : nearestStore.rainLongitude"
+        :rain-latitude="cloudsStore.mapMode ? null : displayRainLatitude"
+        :rain-longitude="cloudsStore.mapMode ? null : displayRainLongitude"
         @userinteract="onUserPan"
         @mapclick="onMapClick"
       />
@@ -311,8 +348,15 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      class="pointer-events-auto absolute right-3 z-20 flex flex-col gap-2"
-      style="bottom: calc(22rem + env(safe-area-inset-bottom))"
+      class="pointer-events-auto absolute right-3 z-20"
+      style="bottom: calc(min(22rem, 38vh) + env(safe-area-inset-bottom) + 7.5rem)"
+    >
+      <AssistantFab :active="assistantOpen" @click="toggleAssistant" />
+    </div>
+
+    <div
+      class="pointer-events-auto absolute right-8 z-20 flex flex-col gap-2"
+      style="bottom: calc(min(22rem, 38vh) + env(safe-area-inset-bottom))"
     >
       <PickLocationButton
         :active="pickMode"
@@ -323,7 +367,15 @@ onBeforeUnmount(() => {
     </div>
 
     <BottomSheet :title="store.label" :subtitle="sheetSubtitle">
-      <div class="space-y-3">
+      <div v-if="assistantOpen" class="h-[min(52vh,420px)]">
+        <AssistantChat
+          :build-context="buildAssistantContext"
+          @highlight="onAssistantHighlight"
+          @close="onAssistantClose"
+          @clear="assistantHighlight = null"
+        />
+      </div>
+      <div v-else class="space-y-3">
         <RainCard
           v-if="!cloudsStore.mapMode"
           class="lr-fade-up"
