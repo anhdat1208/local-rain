@@ -356,7 +356,11 @@ onBeforeUnmount(() => {
 
     <div
       class="pointer-events-auto absolute right-8 z-20 flex flex-col gap-2"
-      style="bottom: calc(min(22rem, 38vh) + env(safe-area-inset-bottom))"
+      :style="{
+        bottom: assistantOpen
+          ? 'calc(min(22rem, 38vh) + env(safe-area-inset-bottom) + 10rem)'
+          : 'calc(min(22rem, 38vh) + env(safe-area-inset-bottom))',
+      }"
     >
       <PickLocationButton
         :active="pickMode"
