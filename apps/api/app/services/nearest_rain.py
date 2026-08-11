@@ -39,7 +39,9 @@ from app.utils.geo import (
 
 RADAR_ZOOM = 7
 TILE_SIZE = 256
-MAX_TILE_RADIUS = 3
+# z7 tiles are ~300 km wide — ring 1 (9 tiles) already covers MAX_NEARBY_M.
+# Ring 3 (49 tiles) was the cold-path bottleneck (~2s of RainViewer GETs).
+MAX_TILE_RADIUS = 1
 PIXEL_STEP = 2
 CACHE_TTL_SECONDS = 120
 MIN_CLOSING_MPS = 0.9
@@ -78,8 +80,9 @@ MOTION_MIN_PEAK_GAIN = 1.06
 # Repeated mosaics: accept a past frame only once ~15% of the echo field changed
 MOTION_CHANGE_RATIO = 0.85
 MOTION_MAX_LOOKBACK_S = 5400
-MOTION_MAX_FRAME_TRIES = 5
-MOTION_BASELINES = 3
+# 3 past frames is enough for a stable median; 5 added ~0.5s with little quality gain
+MOTION_MAX_FRAME_TRIES = 3
+MOTION_BASELINES = 2
 # Each arrow covers a ~10 km cluster (3x3 motion cells)
 VECTOR_CLUSTER_CELLS = 3
 VECTOR_MIN_CLUSTER_CELLS = 2
@@ -178,7 +181,7 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v20:{locale}:{current.unix_time}:"
+            f"nearest-rain:v21:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
@@ -189,26 +192,43 @@ class NearestRainService:
         try:
             client = get_http_client()
             current_upstream = await self._radar_service.upstream_for_frame(current.unix_time)
-            # Same velocity field that drives the map arrows, so both stay consistent
-            current_hit, motion_ctx, clouds = await asyncio.gather(
-                self._find_nearest_hit(
-                    client=client,
-                    tile_url_template=current_upstream,
-                    ref_lat=latitude,
-                    ref_lon=longitude,
-                    max_radius=MAX_TILE_RADIUS,
-                ),
-                self._shared_motion_context(
-                    client=client,
-                    frames=frames.frames,
-                    current=current,
-                    latitude=latitude,
-                    longitude=longitude,
-                    radius_m=VELOCITY_RADIUS_M,
-                ),
-                self._clouds_service.sample_cover(latitude, longitude),
-            )
-            velocity = motion_ctx.velocity
+            velocity_key = self._velocity_cache_key(current, latitude, longitude)
+            cached_velocity = self._read_velocity_cache(velocity_key)
+
+            if cached_velocity is not None:
+                # Regional advection already known — skip multi-frame motion rebuild
+                current_hit, clouds = await asyncio.gather(
+                    self._find_nearest_hit(
+                        client=client,
+                        tile_url_template=current_upstream,
+                        ref_lat=latitude,
+                        ref_lon=longitude,
+                        max_radius=MAX_TILE_RADIUS,
+                    ),
+                    self._clouds_service.sample_cover(latitude, longitude),
+                )
+                velocity = cached_velocity.velocity
+            else:
+                # Same velocity field that drives the map arrows, so both stay consistent
+                current_hit, motion_ctx, clouds = await asyncio.gather(
+                    self._find_nearest_hit(
+                        client=client,
+                        tile_url_template=current_upstream,
+                        ref_lat=latitude,
+                        ref_lon=longitude,
+                        max_radius=MAX_TILE_RADIUS,
+                    ),
+                    self._shared_motion_context(
+                        client=client,
+                        frames=frames.frames,
+                        current=current,
+                        latitude=latitude,
+                        longitude=longitude,
+                        radius_m=VELOCITY_RADIUS_M,
+                    ),
+                    self._clouds_service.sample_cover(latitude, longitude),
+                )
+                velocity = motion_ctx.velocity
         finally:
             _tile_bytes_var.reset(tile_token)
 
@@ -778,30 +798,35 @@ class NearestRainService:
         max_radius: int,
     ) -> RainHit | None:
         origin_tile_x, origin_tile_y = latlon_to_tile(ref_lat, ref_lon, RADAR_ZOOM)
-        # Fetch all rings in one wave — same scoring as sequential rings, less wall time
-        tiles: list[tuple[int, int]] = []
-        for radius in range(0, max_radius + 1):
-            tiles.extend(self._tiles_for_ring(origin_tile_x, origin_tile_y, radius))
-
-        hits = await asyncio.gather(
-            *(
-                self._scan_tile(
-                    client=client,
-                    tile_url_template=tile_url_template,
-                    tile_x=tile_x,
-                    tile_y=tile_y,
-                    ref_lat=ref_lat,
-                    ref_lon=ref_lon,
-                )
-                for tile_x, tile_y in tiles
-            )
-        )
+        # Scan rings inward→out. Stop early when a nearby hit can't be beaten by
+        # anything farther out (dBZ score pull is only a few km).
         best: RainHit | None = None
-        for hit in hits:
-            if hit is None:
-                continue
-            if self._is_better_hit(hit, best):
-                best = hit
+        tile_w = self._approx_tile_width_m(ref_lat)
+        max_dbz_pull = CORE_DBZ_METERS * (MAX_DBZ - DETECT_MIN_DBZ) + NEAR_CORE_BONUS_M
+
+        for radius in range(0, max_radius + 1):
+            tiles = self._tiles_for_ring(origin_tile_x, origin_tile_y, radius)
+            hits = await asyncio.gather(
+                *(
+                    self._scan_tile(
+                        client=client,
+                        tile_url_template=tile_url_template,
+                        tile_x=tile_x,
+                        tile_y=tile_y,
+                        ref_lat=ref_lat,
+                        ref_lon=ref_lon,
+                    )
+                    for tile_x, tile_y in tiles
+                )
+            )
+            for hit in hits:
+                if hit is None:
+                    continue
+                if self._is_better_hit(hit, best):
+                    best = hit
+
+            if best is not None and best.distance_m + max_dbz_pull < tile_w * (radius + 0.45):
+                break
         return best
 
     def _tiles_for_ring(self, origin_x: int, origin_y: int, radius: int) -> list[tuple[int, int]]:

@@ -41,8 +41,8 @@ export const useLocationStore = defineStore("location", {
     setLabel(label: string) {
       this.label = label;
     },
-    resetLabel() {
-      this.label = DEFAULT_LABEL;
+    resetLabel(label: string = DEFAULT_LABEL) {
+      this.label = label;
     },
   },
 });

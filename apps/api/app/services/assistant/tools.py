@@ -148,7 +148,8 @@ class WeatherTools:
     async def _get_location_label(self, args: dict[str, Any]) -> dict[str, Any]:
         lat = float(args["latitude"])
         lng = float(args["longitude"])
-        label = await self._geocoding.reverse_geocode(lat, lng)
+        lang = str(args.get("lang") or "vi")
+        label = await self._geocoding.reverse_geocode(lat, lng, lang=lang)
         return {"ok": True, "label": label, "latitude": lat, "longitude": lng}
 
     async def _get_rain_cell_near(self, args: dict[str, Any]) -> dict[str, Any]:
