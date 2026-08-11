@@ -98,6 +98,7 @@
   },
   "assistant": {
     "fab": "Ask Local Rain AI",
+    "fabShort": "Ask AI",
     "open": "Open AI assistant",
     "title": "Weather assistant",
     "subtitle": "Grounded in Local Rain radar data",
