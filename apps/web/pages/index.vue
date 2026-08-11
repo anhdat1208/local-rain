@@ -348,20 +348,10 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      class="pointer-events-auto absolute right-8 z-30"
-      style="bottom: calc(min(22rem, 38vh) + env(safe-area-inset-bottom) + 6.5rem)"
+      class="pointer-events-auto absolute right-8 z-30 flex flex-col gap-2"
+      style="bottom: calc(min(26rem, 46vh) + env(safe-area-inset-bottom) + 1rem)"
     >
       <AssistantFab :active="assistantOpen" @click="toggleAssistant" />
-    </div>
-
-    <div
-      class="pointer-events-auto absolute right-8 z-30 flex flex-col gap-2"
-      :style="{
-        bottom: assistantOpen
-          ? 'calc(min(22rem, 38vh) + env(safe-area-inset-bottom) + 10rem)'
-          : 'calc(min(22rem, 38vh) + env(safe-area-inset-bottom))',
-      }"
-    >
       <PickLocationButton
         :active="pickMode"
         :disabled="cloudsStore.mapMode"
