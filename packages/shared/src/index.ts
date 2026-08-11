@@ -81,3 +81,61 @@ export interface RainVectorsResponse {
   vectors: RainVectorItem[];
   generatedAt: string;
 }
+
+export type AssistantChatRole = "user" | "assistant";
+
+export interface AssistantChatMessage {
+  id: string;
+  role: AssistantChatRole;
+  content: string;
+  status?: string;
+  facts?: AssistantWeatherFacts;
+  error?: string;
+}
+
+export interface AssistantWeatherFacts {
+  distanceM?: number | null;
+  direction?: string | null;
+  motionDirection?: string | null;
+  speedKmh?: number | null;
+  etaMinutes?: number | null;
+  trend?: string | null;
+  approaching?: boolean | null;
+  confidence?: number | null;
+}
+
+export interface AssistantSelectedCell {
+  latitude: number;
+  longitude: number;
+}
+
+export interface AssistantSessionContext {
+  latitude: number;
+  longitude: number;
+  lang: "vi" | "en";
+  selectedCell?: AssistantSelectedCell;
+  radarTimestamp?: string | null;
+}
+
+export interface AssistantHighlightAction {
+  type: "highlight_rain_cell";
+  latitude: number;
+  longitude: number;
+}
+
+export type AssistantSSEEventType =
+  | "status"
+  | "text_delta"
+  | "weather_facts"
+  | "action"
+  | "done"
+  | "error";
+
+export interface AssistantSSEEvent {
+  type: AssistantSSEEventType;
+  message?: string;
+  content?: string;
+  facts?: AssistantWeatherFacts;
+  action?: AssistantHighlightAction;
+  code?: string;
+}

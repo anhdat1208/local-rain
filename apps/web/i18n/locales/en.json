@@ -95,5 +95,29 @@
     "SW": "SW",
     "W": "W",
     "NW": "NW"
+  },
+  "assistant": {
+    "fab": "Ask Local Rain AI",
+    "open": "Open AI assistant",
+    "title": "Weather assistant",
+    "subtitle": "Grounded in Local Rain radar data",
+    "placeholder": "Ask about rain, radar, ETA…",
+    "send": "Send",
+    "clear": "Clear chat",
+    "empty": "Ask about nearby rain, movement, or whether to go outside.",
+    "factsTitle": "Radar summary",
+    "distance": "Distance",
+    "speed": "Speed",
+    "trend": "Trend",
+    "trend.approaching": "Closing in",
+    "trend.moving_away": "Moving away",
+    "trend.stable": "Stable",
+    "quick": {
+      "rainComing": "Is rain coming?",
+      "nearestRain": "Where is the nearest rain?",
+      "movingToward": "Is that rain moving toward me?",
+      "rainSoon": "Will it rain soon?",
+      "explainRadar": "Explain the radar"
+    }
   }
 }

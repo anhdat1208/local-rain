@@ -95,5 +95,29 @@
     "SW": "Tây Nam",
     "W": "Tây",
     "NW": "Tây Bắc"
+  },
+  "assistant": {
+    "fab": "Hỏi Local Rain AI",
+    "open": "Mở trợ lý AI",
+    "title": "Trợ lý thời tiết",
+    "subtitle": "Dựa trên radar & dữ liệu Local Rain",
+    "placeholder": "Hỏi về mưa, radar, ETA…",
+    "send": "Gửi",
+    "clear": "Xóa hội thoại",
+    "empty": "Hỏi về mưa gần bạn, hướng di chuyển, hoặc có nên ra ngoài không.",
+    "factsTitle": "Tóm tắt radar",
+    "distance": "Khoảng cách",
+    "speed": "Tốc độ",
+    "trend": "Xu hướng",
+    "trend.approaching": "Đang tiến lại",
+    "trend.moving_away": "Đang xa dần",
+    "trend.stable": "Ổn định",
+    "quick": {
+      "rainComing": "Có mưa tới không?",
+      "nearestRain": "Mưa gần nhất ở đâu?",
+      "movingToward": "Mưa có về phía tao không?",
+      "rainSoon": "Sắp mưa chưa?",
+      "explainRadar": "Giải thích radar giúp tao"
+    }
   }
 }
