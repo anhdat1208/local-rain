@@ -98,6 +98,7 @@
   },
   "assistant": {
     "fab": "Hỏi Local Rain AI",
+    "fabShort": "Hỏi AI",
     "open": "Mở trợ lý AI",
     "title": "Trợ lý thời tiết",
     "subtitle": "Dựa trên radar & dữ liệu Local Rain",
