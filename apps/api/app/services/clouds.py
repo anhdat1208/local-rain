@@ -10,7 +10,6 @@ from datetime import UTC, datetime, timedelta
 
 from dataclasses import dataclass
 
-import httpx
 from PIL import Image, ImageFilter
 
 from app.core.config import get_settings
@@ -232,8 +231,9 @@ class CloudsService:
         neighbouring timestamp stitches two different weather scenes into one image
         and leaves hard rectangular seams, so the timestamp never changes here.
         """
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            return await self._get_tile_bytes(client, upstream, attempts=4)
+        from app.core.http_client import get_http_client
+
+        return await self._get_tile_bytes(get_http_client(), upstream, attempts=4)
 
     async def _get_tile_bytes(
         self, client: httpx.AsyncClient, url: str, attempts: int
@@ -305,7 +305,7 @@ class CloudsService:
             image = Image.merge("RGBA", (*channels, alpha))
 
         out = io.BytesIO()
-        image.save(out, format="PNG", optimize=True)
+        image.save(out, format="PNG", compress_level=3)
         return out.getvalue()
 
     def _local_mode(self) -> str:
@@ -318,10 +318,11 @@ class CloudsService:
             return probed
 
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                response = await client.get(CAPABILITIES_URL)
-                response.raise_for_status()
-                xml = response.text
+            from app.core.http_client import get_http_client
+
+            response = await get_http_client().get(CAPABILITIES_URL, timeout=20.0)
+            response.raise_for_status()
+            xml = response.text
         except Exception:
             return self._fallback_timestamp()
 
@@ -353,24 +354,26 @@ class CloudsService:
 
         # Probe newest-first in small parallel batches — same correctness as sequential
         # (we still pick the newest success) but much faster on cold start.
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            batch_size = 4
-            for start in range(0, len(candidates), batch_size):
-                batch = candidates[start : start + batch_size]
+        from app.core.http_client import get_http_client
 
-                async def probe_one(stamp: str) -> str | None:
-                    url = (
-                        "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
-                        f"{layer_id}/default/{stamp}/{matrix}/{max_zoom}/{tile_y}/{tile_x}.png"
-                    )
-                    if await self._get_tile_bytes(client, url, attempts=2) is not None:
-                        return stamp
-                    return None
+        client = get_http_client()
+        batch_size = 4
+        for start in range(0, len(candidates), batch_size):
+            batch = candidates[start : start + batch_size]
 
-                results = await asyncio.gather(*(probe_one(stamp) for stamp in batch))
-                for stamp, hit in zip(batch, results, strict=True):
-                    if hit is not None:
-                        return stamp
+            async def probe_one(stamp: str) -> str | None:
+                url = (
+                    "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
+                    f"{layer_id}/default/{stamp}/{matrix}/{max_zoom}/{tile_y}/{tile_x}.png"
+                )
+                if await self._get_tile_bytes(client, url, attempts=2) is not None:
+                    return stamp
+                return None
+
+            results = await asyncio.gather(*(probe_one(stamp) for stamp in batch))
+            for stamp, hit in zip(batch, results, strict=True):
+                if hit is not None:
+                    return stamp
         return None
 
     def _reference_tile(self, zoom: int) -> tuple[int, int]:

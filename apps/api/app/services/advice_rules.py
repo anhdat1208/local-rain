@@ -42,10 +42,13 @@ SOLID_SUPPORT = 8
 def classify_sky(
     *,
     raining_here: bool,
-    cloud_cover: float,
+    cloud_cover: float | None,
 ) -> SkyState:
     if raining_here:
         return "raining"
+    # Unknown cover (sample missed) — don't invent "clear sky" from a zero default
+    if cloud_cover is None:
+        return "clear"
     if cloud_cover >= 0.32:
         return "cloudy_dry"
     if cloud_cover >= 0.15:
@@ -211,7 +214,7 @@ def build_advice(
     intensity: float = 0.0,
     dbz: float = 0.0,
     support: int = 0,
-    cloud_cover: float = 0.0,
+    cloud_cover: float | None = None,
 ) -> AdviceResult:
     """Deterministic nowcast copy — no LLM."""
     chance, pct = estimate_rain_chance(

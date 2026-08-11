@@ -13,6 +13,7 @@ export function useNearestRain() {
     try {
       const data = await apiFetch<NearestRainResponse>("/api/nearest-rain", {
         query: { lat: latitude, lng: longitude, lang: locale.value },
+        timeout: 16_000,
       });
       store.setResult(data);
     } catch {

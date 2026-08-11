@@ -10,6 +10,26 @@ const FALLBACK_COORDS = {
   accuracy: null as number | null,
 };
 
+const LAST_COORDS_KEY = "lr:lastCoords";
+
+function readLastKnownCoords(): { latitude: number; longitude: number } | null {
+  if (!import.meta.client) return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_COORDS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { latitude?: number; longitude?: number };
+    if (Number.isFinite(parsed.latitude) && Number.isFinite(parsed.longitude)) {
+      return {
+        latitude: parsed.latitude as number,
+        longitude: parsed.longitude as number,
+      };
+    }
+  } catch {
+    // ignore corrupt cache
+  }
+  return null;
+}
+
 function mapPermission(state: PermissionState | "unsupported"): GeolocationPermissionState {
   if (state === "unsupported") return "unsupported";
   return state;
@@ -26,6 +46,22 @@ export function useUserLocation() {
     timeout: 8_000,
     immediate: false,
   });
+
+  /** Sync seed so weather can start before GPS — call before kickoff fetches. */
+  function seedLastKnownCoords(): boolean {
+    if (store.latitude != null && store.longitude != null) return true;
+    const last = readLastKnownCoords();
+    if (!last) return false;
+    store.setCoords(
+      {
+        latitude: last.latitude,
+        longitude: last.longitude,
+        accuracy: null,
+      },
+      "fallback",
+    );
+    return true;
+  }
 
   async function detectPermission(): Promise<GeolocationPermissionState> {
     if (!import.meta.client || !("geolocation" in navigator)) {
@@ -56,6 +92,7 @@ export function useUserLocation() {
     try {
       const data = await apiFetch<LocationResponse>("/api/location", {
         query: { lat: latitude, lng: longitude },
+        timeout: 5_000,
       });
       store.setLabel(data.label);
     } catch {
@@ -91,32 +128,7 @@ export function useUserLocation() {
     store.setLoading(true);
     store.setError(null);
     store.resetLabel();
-
-    // Seed last-known coords immediately so rain/radar can start without waiting GPS
-    if (import.meta.client) {
-      try {
-        const raw = window.localStorage.getItem("lr:lastCoords");
-        if (raw) {
-          const parsed = JSON.parse(raw) as { latitude?: number; longitude?: number };
-          if (
-            Number.isFinite(parsed.latitude) &&
-            Number.isFinite(parsed.longitude) &&
-            store.latitude == null
-          ) {
-            store.setCoords(
-              {
-                latitude: parsed.latitude as number,
-                longitude: parsed.longitude as number,
-                accuracy: null,
-              },
-              "fallback",
-            );
-          }
-        }
-      } catch {
-        // ignore corrupt cache
-      }
-    }
+    seedLastKnownCoords();
 
     const permission = await detectPermission();
     if (permission === "unsupported") {
@@ -175,7 +187,7 @@ export function useUserLocation() {
               );
               try {
                 window.localStorage.setItem(
-                  "lr:lastCoords",
+                  LAST_COORDS_KEY,
                   JSON.stringify({
                     latitude: nextCoords.latitude,
                     longitude: nextCoords.longitude,
@@ -212,8 +224,10 @@ export function useUserLocation() {
     store,
     requestLocation,
     setManualLocation,
+    seedLastKnownCoords,
     stopWatching,
     detectPermission,
     fallbackCoords: FALLBACK_COORDS,
   };
 }
+

@@ -10,25 +10,30 @@ const mapRef = ref<{
 const followUser = ref(true);
 const pickMode = ref(false);
 
-const { store, requestLocation, setManualLocation, fallbackCoords } = useUserLocation();
+const { store, requestLocation, setManualLocation, seedLastKnownCoords, fallbackCoords } =
+  useUserLocation();
 const { store: radarStore, fetchRadar } = useRadar();
 const { store: cloudsStore, fetchClouds } = useClouds();
 const { store: nearestStore, fetchNearestRain } = useNearestRain();
 const { vectors: rainVectors, fetchRainVectors } = useRainVectors();
 const RADAR_REFRESH_MS = 2 * 60 * 1000;
 const CLOUD_REFRESH_MS = 5 * 60 * 1000;
-const NEAREST_REFRESH_MS = 45 * 1000;
+const NEAREST_REFRESH_MS = 60 * 1000;
 let radarTimer: ReturnType<typeof setInterval> | null = null;
 let cloudTimer: ReturnType<typeof setInterval> | null = null;
 let nearestTimer: ReturnType<typeof setInterval> | null = null;
+let nearestInFlight = false;
+let visibilityHandler: (() => void) | null = null;
 
 const mapLatitude = computed(() => store.latitude ?? fallbackCoords.latitude);
 const mapLongitude = computed(() => store.longitude ?? fallbackCoords.longitude);
 const radarTileUrl = computed(() =>
   cloudsStore.mapMode ? null : radarStore.activeFrame?.tileUrlTemplate ?? null,
 );
-// Keep template available even before mapMode flips to avoid style race.
-const cloudTileUrl = computed(() => cloudsStore.tileUrlTemplate);
+// Street map skips cloud tiles (bandwidth); satellite mode still uses the template
+const cloudTileUrl = computed(() =>
+  cloudsStore.mapMode ? cloudsStore.tileUrlTemplate : null,
+);
 
 const etaLabel = computed(() => {
   if (!nearestStore.hasRain || !nearestStore.approaching || nearestStore.eta <= 0) return "—";
@@ -53,14 +58,25 @@ const sheetSubtitle = computed(() => {
   return t("sheet.liveRadar");
 });
 
-async function refreshNearestRain() {
+async function refreshNearestRain(opts?: { includeVectors?: boolean }) {
+  if (nearestInFlight) return;
+  nearestInFlight = true;
   const lat = store.latitude ?? fallbackCoords.latitude;
   const lng = store.longitude ?? fallbackCoords.longitude;
-  await Promise.all([fetchNearestRain(lat, lng), fetchRainVectors(lat, lng)]);
+  const includeVectors = opts?.includeVectors !== false;
+  try {
+    // Card first — vectors are decorative and share BE motion work
+    await fetchNearestRain(lat, lng);
+    if (includeVectors) {
+      void fetchRainVectors(lat, lng);
+    }
+  } finally {
+    nearestInFlight = false;
+  }
 }
 
-async function refreshWeatherData() {
-  await Promise.all([fetchRadar(), fetchClouds(), refreshNearestRain()]);
+async function refreshCriticalWeather() {
+  await Promise.all([fetchRadar(), refreshNearestRain({ includeVectors: true })]);
 }
 
 async function locateAndCenter() {
@@ -69,8 +85,23 @@ async function locateAndCenter() {
     cloudsStore.exitMapMode();
   }
   followUser.value = true;
+  const prevLat = store.latitude;
+  const prevLng = store.longitude;
+  seedLastKnownCoords();
+  void refreshNearestRain();
   await requestLocation();
-  await refreshNearestRain();
+  const lat = store.latitude;
+  const lng = store.longitude;
+  if (
+    lat != null &&
+    lng != null &&
+    (prevLat == null ||
+      prevLng == null ||
+      Math.abs(lat - prevLat) > 0.002 ||
+      Math.abs(lng - prevLng) > 0.002)
+  ) {
+    await refreshNearestRain();
+  }
   await nextTick();
   mapRef.value?.recenter();
 }
@@ -142,10 +173,17 @@ watch(locale, async () => {
   await refreshNearestRain();
 });
 
-function startRealtimeRefresh() {
+function clearRealtimeRefresh() {
   if (radarTimer) clearInterval(radarTimer);
   if (cloudTimer) clearInterval(cloudTimer);
   if (nearestTimer) clearInterval(nearestTimer);
+  radarTimer = null;
+  cloudTimer = null;
+  nearestTimer = null;
+}
+
+function startRealtimeRefresh() {
+  clearRealtimeRefresh();
 
   radarTimer = setInterval(() => {
     void fetchRadar();
@@ -158,12 +196,28 @@ function startRealtimeRefresh() {
   }, NEAREST_REFRESH_MS);
 }
 
+function onVisibilityChange() {
+  if (document.hidden) {
+    clearRealtimeRefresh();
+    return;
+  }
+  void refreshCriticalWeather();
+  void fetchClouds();
+  startRealtimeRefresh();
+}
+
 onMounted(() => {
   // Show loading immediately so the card doesn't flash "dry/clear"
   nearestStore.setLoading(true);
+  // Seed coords BEFORE any weather kickoff (avoids HCMC fallback race)
+  seedLastKnownCoords();
 
-  // Kick weather fetches immediately with last-known / fallback coords while GPS runs
-  void refreshWeatherData().then(() => startRealtimeRefresh());
+  // Critical path: radar + nearest. Clouds/metadata warm in background.
+  void refreshCriticalWeather().then(() => startRealtimeRefresh());
+  void fetchClouds();
+
+  visibilityHandler = onVisibilityChange;
+  document.addEventListener("visibilitychange", visibilityHandler);
 
   void (async () => {
     const prevLat = store.latitude;
@@ -186,9 +240,11 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  if (radarTimer) clearInterval(radarTimer);
-  if (cloudTimer) clearInterval(cloudTimer);
-  if (nearestTimer) clearInterval(nearestTimer);
+  clearRealtimeRefresh();
+  if (visibilityHandler) {
+    document.removeEventListener("visibilitychange", visibilityHandler);
+    visibilityHandler = null;
+  }
 });
 </script>
 
@@ -271,7 +327,7 @@ onBeforeUnmount(() => {
         <RainCard
           v-if="!cloudsStore.mapMode"
           class="lr-fade-up"
-          :loading="nearestStore.loading || store.loading"
+          :loading="nearestStore.loading"
           :has-rain="nearestStore.hasRain"
           :distance-label="nearestStore.distanceLabel"
           :direction="nearestStore.direction"

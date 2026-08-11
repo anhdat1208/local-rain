@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import json
 import math
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 import httpx
 from PIL import Image
 
+from app.core.http_client import get_http_client
 from app.core.redis import get_redis
 from app.schemas.nearest_rain import NearestRainResponse, RainVectorItem, RainVectorsResponse
 from app.schemas.radar import RadarFrameSchema
@@ -95,6 +97,12 @@ NEAR_CORE_RADIUS_M = 5_000.0
 MID_CORE_BONUS_M = 2_500.0
 MID_CORE_RADIUS_M = 8_000.0
 
+# Request-scoped PNG bytes so hit-scan + motion share the same RainViewer GETs
+_tile_bytes_var: contextvars.ContextVar[dict[str, bytes | None] | None] = contextvars.ContextVar(
+    "nearest_tile_bytes", default=None
+)
+_MOTION_LOCAL_MAX = 48
+
 
 @dataclass(slots=True)
 class RainHit:
@@ -121,6 +129,11 @@ class MotionContext:
     current_field: dict[tuple[int, int], float]
     baselines: list[tuple[RadarFrameSchema, dict[tuple[int, int], float]]]
     velocity: tuple[float, float] | None
+
+
+# Singleflight motion across /nearest-rain + /rain-vectors cold stampede
+_motion_inflight: dict[str, asyncio.Task[MotionContext]] = {}
+_motion_local: dict[str, MotionContext] = {}
 
 
 @dataclass(slots=True)
@@ -172,10 +185,12 @@ class NearestRainService:
         if cached is not None:
             return self._with_fresh_age(cached, current)
 
-        async with httpx.AsyncClient(timeout=16.0) as client:
+        tile_token = _tile_bytes_var.set({})
+        try:
+            client = get_http_client()
             current_upstream = await self._radar_service.upstream_for_frame(current.unix_time)
             # Same velocity field that drives the map arrows, so both stay consistent
-            current_hit, velocity, clouds = await asyncio.gather(
+            current_hit, motion_ctx, clouds = await asyncio.gather(
                 self._find_nearest_hit(
                     client=client,
                     tile_url_template=current_upstream,
@@ -183,15 +198,19 @@ class NearestRainService:
                     ref_lon=longitude,
                     max_radius=MAX_TILE_RADIUS,
                 ),
-                self._regional_velocity(
+                self._shared_motion_context(
                     client=client,
                     frames=frames.frames,
                     current=current,
                     latitude=latitude,
                     longitude=longitude,
+                    radius_m=VELOCITY_RADIUS_M,
                 ),
                 self._clouds_service.sample_cover(latitude, longitude),
             )
+            velocity = motion_ctx.velocity
+        finally:
+            _tile_bytes_var.reset(tile_token)
 
         if current_hit is not None and current_hit.distance_m > MAX_NEARBY_M:
             current_hit = None
@@ -205,9 +224,10 @@ class NearestRainService:
         result = self._build_response(
             latitude, longitude, current_hit, motion, locale, current, clouds
         )
-        # Don't lock a "clear sky" answer for 2 minutes when cloud sample never ran
-        if clouds.ok:
-            self._write_cache(cache_key, result)
+        # Always cache radar answer. Short TTL if cloud sample missed so we don't
+        # lock a false "clear sky" badge for the full 2 minutes.
+        ttl = CACHE_TTL_SECONDS if clouds.ok else 25
+        self._write_cache(cache_key, result, ttl)
         return result
 
     async def find_vectors(
@@ -232,8 +252,10 @@ class NearestRainService:
         if cached is not None:
             return cached
 
-        async with httpx.AsyncClient(timeout=16.0) as client:
-            context = await self._motion_context(
+        tile_token = _tile_bytes_var.set({})
+        try:
+            client = get_http_client()
+            context = await self._shared_motion_context(
                 client=client,
                 frames=frames.frames,
                 current=current,
@@ -241,6 +263,8 @@ class NearestRainService:
                 longitude=longitude,
                 radius_m=radius_m,
             )
+        finally:
+            _tile_bytes_var.reset(tile_token)
 
         global_velocity = context.velocity
         if global_velocity is None or not context.baselines:
@@ -284,6 +308,48 @@ class NearestRainService:
 
     def _empty_vectors(self) -> RainVectorsResponse:
         return RainVectorsResponse(vectors=[], generated_at=datetime.now(tz=UTC).isoformat())
+
+    async def _shared_motion_context(
+        self,
+        client: httpx.AsyncClient,
+        frames: list[RadarFrameSchema],
+        current: RadarFrameSchema,
+        latitude: float,
+        longitude: float,
+        radius_m: float,
+    ) -> MotionContext:
+        """Deduplicate motion work when nearest-rain and rain-vectors fire together."""
+        key = (
+            f"{self._velocity_cache_key(current, latitude, longitude)}:{int(radius_m)}"
+        )
+        local = _motion_local.get(key)
+        if local is not None:
+            return local
+
+        existing = _motion_inflight.get(key)
+        if existing is not None:
+            return await existing
+
+        async def run() -> MotionContext:
+            try:
+                ctx = await self._motion_context(
+                    client=client,
+                    frames=frames,
+                    current=current,
+                    latitude=latitude,
+                    longitude=longitude,
+                    radius_m=radius_m,
+                )
+                _motion_local[key] = ctx
+                while len(_motion_local) > _MOTION_LOCAL_MAX:
+                    _motion_local.pop(next(iter(_motion_local)))
+                return ctx
+            finally:
+                _motion_inflight.pop(key, None)
+
+        task = asyncio.create_task(run())
+        _motion_inflight[key] = task
+        return await task
 
     async def _motion_context(
         self,
@@ -356,7 +422,7 @@ class NearestRainService:
         if cached is not None:
             return cached.velocity
 
-        context = await self._motion_context(
+        context = await self._shared_motion_context(
             client=client,
             frames=frames,
             current=current,
@@ -712,35 +778,30 @@ class NearestRainService:
         max_radius: int,
     ) -> RainHit | None:
         origin_tile_x, origin_tile_y = latlon_to_tile(ref_lat, ref_lon, RADAR_ZOOM)
-        best: RainHit | None = None
-
+        # Fetch all rings in one wave — same scoring as sequential rings, less wall time
+        tiles: list[tuple[int, int]] = []
         for radius in range(0, max_radius + 1):
-            tiles = self._tiles_for_ring(origin_tile_x, origin_tile_y, radius)
-            hits = await asyncio.gather(
-                *(
-                    self._scan_tile(
-                        client=client,
-                        tile_url_template=tile_url_template,
-                        tile_x=tile_x,
-                        tile_y=tile_y,
-                        ref_lat=ref_lat,
-                        ref_lon=ref_lon,
-                    )
-                    for tile_x, tile_y in tiles
+            tiles.extend(self._tiles_for_ring(origin_tile_x, origin_tile_y, radius))
+
+        hits = await asyncio.gather(
+            *(
+                self._scan_tile(
+                    client=client,
+                    tile_url_template=tile_url_template,
+                    tile_x=tile_x,
+                    tile_y=tile_y,
+                    ref_lat=ref_lat,
+                    ref_lon=ref_lon,
                 )
+                for tile_x, tile_y in tiles
             )
-            for hit in hits:
-                if hit is None:
-                    continue
-                if self._is_better_hit(hit, best):
-                    best = hit
-
-            if best is not None and radius >= 1:
-                approx_ring_m = self._approx_tile_width_m(ref_lat) * radius
-                # Only early-exit when we already have a solid core nearby
-                if best.dbz >= DETECT_MIN_DBZ and best.distance_m < approx_ring_m * 0.5:
-                    break
-
+        )
+        best: RainHit | None = None
+        for hit in hits:
+            if hit is None:
+                continue
+            if self._is_better_hit(hit, best):
+                best = hit
         return best
 
     def _tiles_for_ring(self, origin_x: int, origin_y: int, radius: int) -> list[tuple[int, int]]:
@@ -812,14 +873,37 @@ class NearestRainService:
         tile_x: int,
         tile_y: int,
     ) -> Image.Image | None:
-        url = self._analysis_tile_url(tile_url_template, tile_x, tile_y)
+        raw = await self._fetch_tile_bytes(client, tile_url_template, tile_x, tile_y)
+        if raw is None:
+            return None
         try:
-            response = await client.get(url)
-            if response.status_code != 200:
-                return None
-            return Image.open(io.BytesIO(response.content)).convert("RGBA")
+            return Image.open(io.BytesIO(raw)).convert("RGBA")
         except Exception:
             return None
+
+    async def _fetch_tile_bytes(
+        self,
+        client: httpx.AsyncClient,
+        tile_url_template: str,
+        tile_x: int,
+        tile_y: int,
+    ) -> bytes | None:
+        url = self._analysis_tile_url(tile_url_template, tile_x, tile_y)
+        cache = _tile_bytes_var.get()
+        if cache is not None and url in cache:
+            return cache[url]
+
+        content: bytes | None = None
+        try:
+            response = await client.get(url, timeout=12.0)
+            if response.status_code == 200 and response.content:
+                content = response.content
+        except Exception:
+            content = None
+
+        if cache is not None:
+            cache[url] = content
+        return content
 
     def _accumulate_tile_field(
         self,
@@ -910,12 +994,11 @@ class NearestRainService:
         ref_lat: float,
         ref_lon: float,
     ) -> RainHit | None:
-        url = self._analysis_tile_url(tile_url_template, tile_x, tile_y)
+        raw = await self._fetch_tile_bytes(client, tile_url_template, tile_x, tile_y)
+        if raw is None:
+            return None
         try:
-            response = await client.get(url)
-            if response.status_code != 200:
-                return None
-            image = Image.open(io.BytesIO(response.content)).convert("RGBA")
+            image = Image.open(io.BytesIO(raw)).convert("RGBA")
         except Exception:
             return None
 
@@ -1026,8 +1109,16 @@ class NearestRainService:
         clouds: CloudCoverSample | None = None,
     ) -> NearestRainResponse:
         radar_timestamp, radar_age = self._frame_age(frame)
-        cloud_cover = clouds.cover if clouds is not None else 0.0
-        cloud_pct = int(round(max(0.0, min(1.0, cloud_cover)) * 100))
+        cloud_cover = (
+            clouds.cover
+            if clouds is not None and clouds.ok
+            else None
+        )
+        cloud_pct = (
+            int(round(max(0.0, min(1.0, cloud_cover)) * 100))
+            if cloud_cover is not None
+            else 0
+        )
         if hit is None:
             msg = (
                 "Không phát hiện mưa gần đây."
@@ -1116,7 +1207,7 @@ class NearestRainService:
         lang: Lang = "vi",
         radar_timestamp: str | None = None,
         radar_age_minutes: int = 0,
-        cloud_cover: float = 0.0,
+        cloud_cover: float | None = None,
     ) -> NearestRainResponse:
         copy = build_advice(
             has_rain=False,
@@ -1137,6 +1228,11 @@ class NearestRainService:
             "No rain detected nearby.",
         }:
             use_explanation = copy.explanation
+        cloud_pct = (
+            int(round(max(0.0, min(1.0, cloud_cover)) * 100))
+            if cloud_cover is not None
+            else 0
+        )
         return NearestRainResponse(
             distance=-1,
             eta=0,
@@ -1159,7 +1255,7 @@ class NearestRainService:
             radar_timestamp=radar_timestamp,
             radar_age_minutes=radar_age_minutes,
             sky_state=copy.sky_state,
-            cloud_cover_pct=int(round(max(0.0, min(1.0, cloud_cover)) * 100)),
+            cloud_cover_pct=cloud_pct,
         )
 
     def _read_cache(self, key: str) -> NearestRainResponse | None:
@@ -1174,9 +1270,11 @@ class NearestRainService:
         except Exception:
             return None
 
-    def _write_cache(self, key: str, payload: NearestRainResponse) -> None:
+    def _write_cache(
+        self, key: str, payload: NearestRainResponse, ttl: int = CACHE_TTL_SECONDS
+    ) -> None:
         try:
-            get_redis().setex(key, CACHE_TTL_SECONDS, payload.model_dump_json(by_alias=True))
+            get_redis().setex(key, max(5, ttl), payload.model_dump_json(by_alias=True))
         except Exception:
             return
 

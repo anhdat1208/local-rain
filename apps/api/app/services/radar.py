@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
-
 from app.core.config import get_settings
+from app.core.http_client import get_http_client
 from app.core.redis import get_redis
 from app.schemas.radar import RadarFrameSchema, RadarResponse
 from app.services.radar_dbz import filter_tile_below_dbz
@@ -23,9 +23,12 @@ STALE_CACHE_TTL_SECONDS = 2 * 60 * 60
 # Unsmoothed tiles — same as nearest-rain scan (sharp cores, less soft fringe)
 UPSTREAM_OPTIONS = "2/0_1.png"
 
+_frames_inflight: asyncio.Task[RadarResponse] | None = None
+
 
 class RadarService:
     async def get_radar_frames(self) -> RadarResponse:
+        global _frames_inflight
         cached = self._read_cache()
         if cached is not None:
             return cached
@@ -33,19 +36,28 @@ class RadarService:
         # Serve stale frames immediately while RainViewer refresh runs in the background
         stale = self._read_stale_cache()
         if stale is not None and stale.frames:
-            import asyncio
-
             asyncio.create_task(self._safe_refresh_frames())
             return stale
 
-        payload = await self._fetch_rainviewer()
-        response, upstreams = self._to_response(payload)
-        if not response.frames:
-            stale = self._read_stale_cache()
-            if stale is not None:
-                return stale
-        self._write_cache(response, upstreams)
-        return response
+        if _frames_inflight is not None:
+            return await _frames_inflight
+
+        async def run() -> RadarResponse:
+            global _frames_inflight
+            try:
+                payload = await self._fetch_rainviewer()
+                response, upstreams = self._to_response(payload)
+                if not response.frames:
+                    stale_inner = self._read_stale_cache()
+                    if stale_inner is not None:
+                        return stale_inner
+                self._write_cache(response, upstreams)
+                return response
+            finally:
+                _frames_inflight = None
+
+        _frames_inflight = asyncio.create_task(run())
+        return await _frames_inflight
 
     async def _safe_refresh_frames(self) -> None:
         try:
@@ -93,10 +105,28 @@ class RadarService:
             .replace("{x}", str(x))
             .replace("{y}", str(y))
         )
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            response = await client.get(url)
+        # Raw RainViewer bytes — share across map filter + analysis when possible
+        raw_cache_key = f"radar:raw:v1:{unix_time}:{z}:{x}:{y}"
+        raw: bytes | None = None
+        try:
+            cached_raw = get_redis().get(raw_cache_key)
+            if cached_raw:
+                raw = base64.b64decode(cached_raw)
+        except Exception:
+            pass
+
+        if raw is None:
+            response = await get_http_client().get(url, timeout=12.0)
             response.raise_for_status()
             raw = response.content
+            try:
+                get_redis().setex(
+                    raw_cache_key,
+                    TILE_CACHE_TTL_SECONDS,
+                    base64.b64encode(raw).decode("ascii"),
+                )
+            except Exception:
+                pass
 
         filtered = filter_tile_below_dbz(raw)
         try:
@@ -110,13 +140,12 @@ class RadarService:
         return filtered
 
     async def _fetch_rainviewer(self) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            response = await client.get(RAINVIEWER_MAPS_URL)
-            response.raise_for_status()
-            data = response.json()
-            if not isinstance(data, dict):
-                raise ValueError("Unexpected RainViewer payload")
-            return data
+        response = await get_http_client().get(RAINVIEWER_MAPS_URL, timeout=8.0)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected RainViewer payload")
+        return data
 
     def _to_response(
         self, payload: dict[str, Any]
