@@ -348,14 +348,14 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      class="pointer-events-auto absolute right-8 z-20"
+      class="pointer-events-auto absolute right-8 z-30"
       style="bottom: calc(min(22rem, 38vh) + env(safe-area-inset-bottom) + 6.5rem)"
     >
       <AssistantFab :active="assistantOpen" @click="toggleAssistant" />
     </div>
 
     <div
-      class="pointer-events-auto absolute right-8 z-20 flex flex-col gap-2"
+      class="pointer-events-auto absolute right-8 z-30 flex flex-col gap-2"
       :style="{
         bottom: assistantOpen
           ? 'calc(min(22rem, 38vh) + env(safe-area-inset-bottom) + 10rem)'
