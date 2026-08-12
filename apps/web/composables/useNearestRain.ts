@@ -2,8 +2,9 @@ import type { NearestRainResponse } from "@local-rain/shared";
 
 import { useNearestRainStore } from "~/stores/nearestRain";
 
-const STALE_KEY = "lr:nearestRain:v1";
+const STALE_KEY = "lr:nearestRain:v2";
 const STALE_MAX_AGE_MS = 5 * 60 * 1000;
+const STALE_CLEAR_MAX_AGE_MS = 45_000;
 
 type StalePayload = {
   latitude: number;
@@ -26,13 +27,18 @@ function readStale(latitude: number, longitude: number): NearestRainResponse | n
     ) {
       return null;
     }
-    if (Date.now() - parsed.savedAt > STALE_MAX_AGE_MS) return null;
+    const age = Date.now() - parsed.savedAt;
+    if (age > STALE_MAX_AGE_MS) return null;
     if (
       Math.abs(parsed.latitude - latitude) > 0.01 ||
       Math.abs(parsed.longitude - longitude) > 0.01
     ) {
       return null;
     }
+    // Never flash a stale "clear / no rain" card during a storm — only reuse
+    // dry answers when they are very fresh.
+    const wet = Boolean(parsed.data.hasRain || parsed.data.rainingHere);
+    if (!wet && age > STALE_CLEAR_MAX_AGE_MS) return null;
     return parsed.data;
   } catch {
     return null;

@@ -16,8 +16,8 @@ from app.core.config import get_settings
 from app.core.redis import get_redis
 from app.schemas.clouds import CloudsResponse
 
-CACHE_KEY = "clouds:himawari:v19"
-STALE_CACHE_KEY = "clouds:himawari:stale:v19"
+CACHE_KEY = "clouds:himawari:v20"
+STALE_CACHE_KEY = "clouds:himawari:stale:v20"
 CACHE_TTL_SECONDS = 180
 STALE_CACHE_TTL_SECONDS = 2 * 60 * 60
 TILE_CACHE_TTL_SECONDS = 300
@@ -44,9 +44,9 @@ PROBE_LON = 108.5
 # Fixed brightness-temperature calibration for the night IR channel. Deriving the
 # threshold per tile made neighbouring tiles disagree at their shared edge and made
 # the whole scene jump between refreshes, so the mapping is constant instead.
-NIGHT_IR_FLOOR = 92  # warm surface and clear sky
+NIGHT_IR_FLOOR = 84  # warm surface; lower = more low/mid cloud kept at night
 NIGHT_IR_TOP = 215  # coldest convective tops
-NIGHT_IR_GAMMA = 1.45  # holds low cloud down instead of flattening into gray fog
+NIGHT_IR_GAMMA = 1.25  # less aggressive — storms stay visible after blur
 NIGHT_CLOUD_RGB = (247, 250, 253)
 
 
@@ -65,9 +65,10 @@ def _build_night_lut() -> list[int]:
 NIGHT_ALPHA_LUT = _build_night_lut()
 
 # Soft-tile alpha above this counts as cloud in the local sky sample
-CLOUD_ALPHA_FLOOR = 40
-CLOUDY_COVER = 0.32
-PARTLY_COVER = 0.15
+CLOUD_ALPHA_FLOOR_DAY = 40
+CLOUD_ALPHA_FLOOR_NIGHT = 18
+CLOUDY_COVER = 0.28
+PARTLY_COVER = 0.12
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +113,7 @@ class CloudsService:
         )
         public_base = get_settings().resolved_public_api_base
         # Cache-bust query so browsers / SW don't keep an older soft-tile recipe
-        tile_url_template = f"{public_base}/api/clouds/tiles/{{z}}/{{x}}/{{y}}.png?v=19"
+        tile_url_template = f"{public_base}/api/clouds/tiles/{{z}}/{{x}}/{{y}}.png?v=20"
         response = CloudsResponse(
             tile_url_template=tile_url_template,
             timestamp=timestamp,
@@ -139,7 +140,16 @@ class CloudsService:
             tile_x, tile_y, px, py = self._latlon_to_pixel(latitude, longitude, max_zoom)
             soft = await self.get_soft_tile(max_zoom, tile_x, tile_y)
             image = Image.open(io.BytesIO(soft)).convert("RGBA")
-            cover = self._alpha_cover(image, px, py, radius=5)
+            # ~25–30 km window at z6/z7 so a nearby storm cell isn't missed
+            cover = self._alpha_cover(
+                image,
+                px,
+                py,
+                radius=12,
+                alpha_floor=(
+                    CLOUD_ALPHA_FLOOR_NIGHT if mode == "night" else CLOUD_ALPHA_FLOOR_DAY
+                ),
+            )
             return CloudCoverSample(
                 cover=cover,
                 mode=mode,
@@ -168,7 +178,14 @@ class CloudsService:
         py = int((yt - tile_y) * 256)
         return tile_x, tile_y, max(0, min(255, px)), max(0, min(255, py))
 
-    def _alpha_cover(self, image: Image.Image, px: int, py: int, radius: int) -> float:
+    def _alpha_cover(
+        self,
+        image: Image.Image,
+        px: int,
+        py: int,
+        radius: int,
+        alpha_floor: int = CLOUD_ALPHA_FLOOR_DAY,
+    ) -> float:
         pixels = image.load()
         width, height = image.size
         cloudy = 0
@@ -179,7 +196,7 @@ class CloudsService:
                 yy = min(height - 1, max(0, py + dy))
                 alpha = pixels[xx, yy][3]
                 total += 1
-                if alpha >= CLOUD_ALPHA_FLOOR:
+                if alpha >= alpha_floor:
                     cloudy += 1
         if total <= 0:
             return 0.0
@@ -194,7 +211,7 @@ class CloudsService:
         if meta is None:
             raise RuntimeError("Cloud imagery metadata unavailable")
 
-        cache_key = f"clouds:tile:v19:{meta['mode']}:{meta['timestamp']}:{z}:{x}:{y}"
+        cache_key = f"clouds:tile:v20:{meta['mode']}:{meta['timestamp']}:{z}:{x}:{y}"
         try:
             cached = get_redis().get(cache_key)
             if cached:
@@ -298,7 +315,7 @@ class CloudsService:
         else:
             # Night IR: one continuous grey ramp, cloud depth carried by alpha so the
             # tile composites straight onto the black field the client draws below it.
-            gray = image.convert("L").filter(ImageFilter.GaussianBlur(radius=0.9))
+            gray = image.convert("L").filter(ImageFilter.GaussianBlur(radius=0.45))
             alpha = gray.point(NIGHT_ALPHA_LUT)
             size = gray.size
             channels = [Image.new("L", size, level) for level in NIGHT_CLOUD_RGB]

@@ -798,11 +798,9 @@ class NearestRainService:
         max_radius: int,
     ) -> RainHit | None:
         origin_tile_x, origin_tile_y = latlon_to_tile(ref_lat, ref_lon, RADAR_ZOOM)
-        # Scan rings inward→out. Stop early when a nearby hit can't be beaten by
-        # anything farther out (dBZ score pull is only a few km).
+        # Ring-by-ring keeps latency down, but never early-exit: at z7 a user on a
+        # tile edge can have closer rain in the neighbouring tile only 1–2 km away.
         best: RainHit | None = None
-        tile_w = self._approx_tile_width_m(ref_lat)
-        max_dbz_pull = CORE_DBZ_METERS * (MAX_DBZ - DETECT_MIN_DBZ) + NEAR_CORE_BONUS_M
 
         for radius in range(0, max_radius + 1):
             tiles = self._tiles_for_ring(origin_tile_x, origin_tile_y, radius)
@@ -824,9 +822,6 @@ class NearestRainService:
                     continue
                 if self._is_better_hit(hit, best):
                     best = hit
-
-            if best is not None and best.distance_m + max_dbz_pull < tile_w * (radius + 0.45):
-                break
         return best
 
     def _tiles_for_ring(self, origin_x: int, origin_y: int, radius: int) -> list[tuple[int, int]]:

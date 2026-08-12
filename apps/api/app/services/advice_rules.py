@@ -46,12 +46,12 @@ def classify_sky(
 ) -> SkyState:
     if raining_here:
         return "raining"
-    # Unknown cover (sample missed) — don't invent "clear sky" from a zero default
+    # Unknown cover (sample missed) — never claim "clear sky"
     if cloud_cover is None:
-        return "clear"
-    if cloud_cover >= 0.32:
+        return "partly"
+    if cloud_cover >= 0.28:
         return "cloudy_dry"
-    if cloud_cover >= 0.15:
+    if cloud_cover >= 0.12:
         return "partly"
     return "clear"
 
