@@ -12,7 +12,7 @@ const pickMode = ref(false);
 
 const { store, requestLocation, setManualLocation, seedLastKnownCoords, fallbackCoords } =
   useUserLocation();
-const { store: radarStore, fetchRadar } = useRadar();
+const { store: radarStore, fetchRadar, prefetchAround } = useRadar();
 const { store: cloudsStore, fetchClouds } = useClouds();
 const { store: nearestStore, fetchNearestRain } = useNearestRain();
 const { vectors: rainVectors, fetchRainVectors } = useRainVectors();
@@ -250,7 +250,10 @@ onMounted(() => {
   seedLastKnownCoords();
 
   // Critical path: radar + nearest. Clouds/metadata warm in background.
-  void refreshCriticalWeather().then(() => startRealtimeRefresh());
+  void refreshCriticalWeather().then(() => {
+    startRealtimeRefresh();
+    prefetchAround(mapLatitude.value, mapLongitude.value);
+  });
   void fetchClouds();
 
   visibilityHandler = onVisibilityChange;
@@ -272,6 +275,9 @@ onMounted(() => {
         Math.abs(lng - prevLng) > 0.002)
     ) {
       await refreshNearestRain();
+    }
+    if (lat != null && lng != null) {
+      prefetchAround(lat, lng);
     }
   })();
 });

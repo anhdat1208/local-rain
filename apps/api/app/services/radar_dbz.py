@@ -64,6 +64,11 @@ UNIVERSAL_BLUE_RAIN: tuple[tuple[int, int, int, int], ...] = (
     (255, 119, 255, 60),
 )
 
+# Quantized RGB → precomputed map pixel. Avoids 46-color distance scan per pixel.
+_FILTER_SHIFT = 3  # 8-level bins → 32³ = 32768 entries
+_FILTER_BINS = 256 >> _FILTER_SHIFT
+_FILTER_RGBA_LUT: list[tuple[int, int, int, int]] | None = None
+
 
 @lru_cache(maxsize=65_536)
 def _rgb_dbz(r: int, g: int, b: int) -> float:
@@ -110,22 +115,79 @@ def dbz_to_cool_color(dbz: float) -> tuple[int, int, int]:
     return (173, 109, 232)  # magenta-purple for strongest cores
 
 
+def _filter_lut() -> list[tuple[int, int, int, int]]:
+    global _FILTER_RGBA_LUT
+    if _FILTER_RGBA_LUT is not None:
+        return _FILTER_RGBA_LUT
+
+    transparent = (0, 0, 0, 0)
+    lut: list[tuple[int, int, int, int]] = [transparent] * (
+        _FILTER_BINS * _FILTER_BINS * _FILTER_BINS
+    )
+    half = 1 << (_FILTER_SHIFT - 1)
+    for rq in range(_FILTER_BINS):
+        for gq in range(_FILTER_BINS):
+            for bq in range(_FILTER_BINS):
+                r = (rq << _FILTER_SHIFT) + half
+                g = (gq << _FILTER_SHIFT) + half
+                b = (bq << _FILTER_SHIFT) + half
+                dbz = _rgb_dbz(r, g, b)
+                idx = (rq * _FILTER_BINS + gq) * _FILTER_BINS + bq
+                if dbz < MAP_MIN_DBZ:
+                    lut[idx] = transparent
+                    continue
+                nr, ng, nb = dbz_to_cool_color(dbz)
+                boost = intensity_from_dbz(dbz)
+                alpha = min(255, max(135, int(150 + boost * 105)))
+                lut[idx] = (nr, ng, nb, alpha)
+    _FILTER_RGBA_LUT = lut
+    return lut
+
+
 def filter_tile_below_dbz(png_bytes: bytes, min_dbz: float = MAP_MIN_DBZ) -> bytes:
     """Hide weak fringe; map shows ≥35 dBZ cores that usually mean real rain."""
     image = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    pixels = image.load()
-    width, height = image.size
-    for y in range(height):
-        for x in range(width):
-            r, g, b, a = pixels[x, y]
-            dbz = pixel_dbz(r, g, b, a)
-            if a < 80 or dbz < min_dbz:
-                pixels[x, y] = (0, 0, 0, 0)
+    src = memoryview(image.tobytes())
+    out = bytearray(len(src))
+    # Fast path uses the quantized LUT (same threshold as MAP_MIN_DBZ).
+    if min_dbz == MAP_MIN_DBZ:
+        lut = _filter_lut()
+        bins = _FILTER_BINS
+        shift = _FILTER_SHIFT
+        for i in range(0, len(src), 4):
+            a = src[i + 3]
+            if a < 80:
                 continue
-            nr, ng, nb = dbz_to_cool_color(dbz)
-            boost = intensity_from_dbz(dbz)
-            alpha = min(255, max(135, int(150 + boost * 105)))
-            pixels[x, y] = (nr, ng, nb, alpha)
-    out = io.BytesIO()
-    image.save(out, format="PNG", compress_level=3)
-    return out.getvalue()
+            idx = (
+                ((src[i] >> shift) * bins + (src[i + 1] >> shift)) * bins
+                + (src[i + 2] >> shift)
+            )
+            nr, ng, nb, na = lut[idx]
+            if na == 0:
+                continue
+            out[i] = nr
+            out[i + 1] = ng
+            out[i + 2] = nb
+            out[i + 3] = na
+    else:
+        pixels = image.load()
+        width, height = image.size
+        for y in range(height):
+            for x in range(width):
+                r, g, b, a = pixels[x, y]
+                dbz = pixel_dbz(r, g, b, a)
+                if a < 80 or dbz < min_dbz:
+                    continue
+                nr, ng, nb = dbz_to_cool_color(dbz)
+                boost = intensity_from_dbz(dbz)
+                alpha = min(255, max(135, int(150 + boost * 105)))
+                oi = (y * width + x) * 4
+                out[oi] = nr
+                out[oi + 1] = ng
+                out[oi + 2] = nb
+                out[oi + 3] = alpha
+
+    filtered = Image.frombytes("RGBA", image.size, bytes(out))
+    buf = io.BytesIO()
+    filtered.save(buf, format="PNG", compress_level=3)
+    return buf.getvalue()
