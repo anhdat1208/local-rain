@@ -103,10 +103,13 @@ def estimate_rain_chance(
     intensity: float = 0.0,
     dbz: float = 0.0,
     support: int = 0,
+    stationary_clutter: bool = False,
 ) -> tuple[RainChance, int]:
     """Heuristic nowcast chance at the user's spot (not a NWP forecast)."""
     if not has_rain:
         return "none", 8
+    if stationary_clutter:
+        return "low", 18
 
     score = 18.0
     if distance_m <= 250:
@@ -215,6 +218,7 @@ def build_advice(
     dbz: float = 0.0,
     support: int = 0,
     cloud_cover: float | None = None,
+    stationary_clutter: bool = False,
 ) -> AdviceResult:
     """Deterministic nowcast copy — no LLM."""
     chance, pct = estimate_rain_chance(
@@ -225,11 +229,16 @@ def build_advice(
         intensity=intensity,
         dbz=dbz,
         support=support,
+        stationary_clutter=stationary_clutter,
     )
-    raining_here = has_rain and is_raining_here(distance_m, dbz, support)
+    raining_here = (
+        False
+        if stationary_clutter
+        else has_rain and is_raining_here(distance_m, dbz, support)
+    )
     sky_state = classify_sky(raining_here=raining_here, cloud_cover=cloud_cover)
     rain_in_1h, rain_in_2h = _horizon_rain_flags(
-        has_rain=has_rain,
+        has_rain=has_rain and not stationary_clutter,
         distance_m=distance_m,
         approaching=approaching,
         eta_minutes=eta_minutes,
@@ -249,6 +258,27 @@ def build_advice(
             rain_in_1h=rain_in_1h,
             rain_in_2h=rain_in_2h,
             sky_state=state or sky_state,
+        )
+
+    if stationary_clutter and has_rain:
+        distance_text = _format_distance(distance_m, lang)
+        dir_text = _dir(direction, lang)
+        if lang == "vi":
+            return pack(
+                (
+                    f"Echo radar đứng yên lâu (~{dbz:.0f} dBZ, cách {distance_text} "
+                    f"hướng {dir_text}) — khả năng cao là nhiễu/echo giả, không phải ô mưa thật."
+                ),
+                "Đường nhiều khả năng vẫn khô; chưa cần trú mưa vì bản đồ này.",
+                "cloudy_dry" if sky_state == "cloudy_dry" else "partly",
+            )
+        return pack(
+            (
+                f"A long-stationary radar echo (~{dbz:.0f} dBZ, {distance_text} "
+                f"toward {direction}) — likely clutter/false echo, not real rain."
+            ),
+            "Roads are probably still dry; no need to shelter for this echo.",
+            "cloudy_dry" if sky_state == "cloudy_dry" else "partly",
         )
 
     if not has_rain:
