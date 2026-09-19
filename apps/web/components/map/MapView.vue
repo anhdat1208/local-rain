@@ -357,6 +357,9 @@ function upsertRadarBuffer(instance: Map, bufferIndex: number, tileUrl: string, 
         "raster-opacity": opacity,
         "raster-opacity-transition": { duration: CROSSFADE_MS, delay: 0 },
         "raster-fade-duration": 0,
+        // A radar pixel is ~1.2 km wide at z7, so the default linear resampling
+        // smears a few cells into one continuous wash across the whole viewport.
+        "raster-resampling": "nearest",
       },
     });
   } else {
@@ -739,7 +742,7 @@ function initMap() {
       center: [props.longitude, props.latitude],
       zoom: props.zoom,
       attributionControl: { compact: true },
-      maxTileCacheSize: 80,
+      maxTileCacheSize: 160,
       fadeDuration: 0,
       cancelPendingTileRequestsWhileZooming: true,
       transformRequest: (url) => {
