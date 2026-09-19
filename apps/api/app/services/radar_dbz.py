@@ -191,39 +191,3 @@ def filter_tile_below_dbz(png_bytes: bytes, min_dbz: float = MAP_MIN_DBZ) -> byt
     buf = io.BytesIO()
     filtered.save(buf, format="PNG", compress_level=3)
     return buf.getvalue()
-
-
-def mask_clutter_in_tile(
-    png_bytes: bytes,
-    *,
-    z: int,
-    x: int,
-    y: int,
-    clutter_cells: set[tuple[int, int]],
-) -> bytes:
-    """Zero map pixels whose centres fall in long-stationary clutter cells."""
-    if not clutter_cells or not png_bytes:
-        return png_bytes
-
-    from app.services.clutter_track import GRID_DEG
-    from app.utils.geo import tile_pixel_to_latlon
-
-    image = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    width, height = image.size
-    pixels = image.load()
-    changed = False
-    for py in range(height):
-        for px in range(width):
-            r, g, b, a = pixels[px, py]
-            if a == 0:
-                continue
-            lat, lon = tile_pixel_to_latlon(x, y, z, px + 0.5, py + 0.5, width)
-            key = (int(round(lat / GRID_DEG)), int(round(lon / GRID_DEG)))
-            if key in clutter_cells:
-                pixels[px, py] = (0, 0, 0, 0)
-                changed = True
-    if not changed:
-        return png_bytes
-    buf = io.BytesIO()
-    image.save(buf, format="PNG", compress_level=3)
-    return buf.getvalue()
