@@ -23,12 +23,6 @@ from app.services.advice_rules import (
     normalize_lang,
 )
 from app.services.clouds import CloudCoverSample, CloudsService
-from app.services.clutter_track import (
-    GRID_DEG,
-    STATIONARY_SECONDS,
-    cell_index,
-    get_clutter_tracker,
-)
 from app.services.radar import RadarService
 from app.services.radar_dbz import (
     MAX_DBZ,
@@ -187,7 +181,7 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v22:{locale}:{current.unix_time}:"
+            f"nearest-rain:v21:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
@@ -195,7 +189,6 @@ class NearestRainService:
             return self._with_fresh_age(cached, current)
 
         tile_token = _tile_bytes_var.set({})
-        motion_field: dict[tuple[int, int], float] | None = None
         try:
             client = get_http_client()
             current_upstream = await self._radar_service.upstream_for_frame(current.unix_time)
@@ -236,21 +229,11 @@ class NearestRainService:
                     self._clouds_service.sample_cover(latitude, longitude),
                 )
                 velocity = motion_ctx.velocity
-                motion_field = motion_ctx.current_field
         finally:
             _tile_bytes_var.reset(tile_token)
 
         if current_hit is not None and current_hit.distance_m > MAX_NEARBY_M:
             current_hit = None
-
-        self._observe_clutter(
-            motion_field,
-            current_hit,
-            velocity,
-            user_lat=latitude,
-            user_lon=longitude,
-            allow_credit=True,
-        )
 
         motion = self._motion_from_velocity(
             user_lat=latitude,
@@ -304,13 +287,6 @@ class NearestRainService:
             _tile_bytes_var.reset(tile_token)
 
         global_velocity = context.velocity
-        # Soft track only — no 2h credit on the wide vectors field
-        self._observe_clutter(
-            context.current_field,
-            None,
-            global_velocity,
-            allow_credit=False,
-        )
         if global_velocity is None or not context.baselines:
             return self._empty_vectors()
 
@@ -1142,44 +1118,6 @@ class NearestRainService:
             return candidate.distance_m < best.distance_m
         return cand_score < best_score
 
-    def _observe_clutter(
-        self,
-        field: dict[tuple[int, int], float] | None,
-        hit: RainHit | None,
-        velocity: tuple[float, float] | None,
-        *,
-        user_lat: float | None = None,
-        user_lon: float | None = None,
-        allow_credit: bool = True,
-    ) -> None:
-        """Mark long-stationary echoes as clutter. Fail-open inside tracker."""
-        moving = velocity is not None
-        history_credit_s = STATIONARY_SECONDS if (allow_credit and not moving) else 0
-        observe_field = dict(field) if field else {}
-        if not observe_field and hit is not None and hit.dbz >= DETECT_MIN_DBZ:
-            observe_field = {cell_index(hit.latitude, hit.longitude): hit.dbz}
-        if not observe_field:
-            return
-        # Instant 2h credit only for the local neighbourhood — avoid wiping a
-        # whole metro of real rain when regional velocity is unavailable.
-        if history_credit_s > 0 and user_lat is not None and user_lon is not None:
-            local: dict[tuple[int, int], float] = {}
-            for key, dbz in observe_field.items():
-                lat = key[0] * GRID_DEG
-                lon = key[1] * GRID_DEG
-                if haversine_m(user_lat, user_lon, lat, lon) <= 25_000:
-                    local[key] = dbz
-            if hit is not None and hit.dbz >= DETECT_MIN_DBZ:
-                local[cell_index(hit.latitude, hit.longitude)] = hit.dbz
-            observe_field = local
-        if not observe_field:
-            return
-        get_clutter_tracker().observe_field(
-            observe_field,
-            moving=moving,
-            history_credit_s=history_credit_s,
-        )
-
     def _build_response(
         self,
         user_lat: float,
@@ -1215,9 +1153,6 @@ class NearestRainService:
         direction = compass_from_bearing(
             bearing_deg(user_lat, user_lon, hit.latitude, hit.longitude)
         )
-        stationary_clutter = get_clutter_tracker().is_clutter(
-            hit.latitude, hit.longitude
-        )
         # Confidence tracks reflectivity strength + motion corroboration
         confidence = int(
             min(
@@ -1230,49 +1165,42 @@ class NearestRainService:
         )
         if motion.approaching and motion.eta_minutes > 0:
             confidence = min(95, confidence + 6)
-        if stationary_clutter:
-            confidence = min(confidence, 35)
 
         copy = build_advice(
             has_rain=True,
             distance_m=distance,
             direction=direction,
-            approaching=motion.approaching and not stationary_clutter,
-            eta_minutes=0 if stationary_clutter else motion.eta_minutes,
+            approaching=motion.approaching,
+            eta_minutes=motion.eta_minutes,
             motion_direction=motion.motion_direction,
-            speed_kmh=0.0 if stationary_clutter else motion.speed_kmh,
+            speed_kmh=motion.speed_kmh,
             previous_distance_m=motion.previous_distance_m,
             lang=lang,
             intensity=hit.intensity,
             dbz=hit.dbz,
             support=hit.support,
             cloud_cover=cloud_cover,
-            stationary_clutter=stationary_clutter,
         )
 
         return NearestRainResponse(
             distance=distance,
-            eta=0 if stationary_clutter else motion.eta_minutes,
+            eta=motion.eta_minutes,
             direction=direction,
             confidence=confidence,
             explanation=copy.explanation,
             advice=copy.advice,
-            has_rain=not stationary_clutter,
+            has_rain=True,
             rain_latitude=round(hit.latitude, 5),
             rain_longitude=round(hit.longitude, 5),
-            motion_direction=None if stationary_clutter else motion.motion_direction,
-            speed_kmh=0.0 if stationary_clutter else motion.speed_kmh,
-            approaching=False if stationary_clutter else motion.approaching,
+            motion_direction=motion.motion_direction,
+            speed_kmh=motion.speed_kmh,
+            approaching=motion.approaching,
             previous_distance=motion.previous_distance_m,
             rain_chance=copy.rain_chance,
             rain_chance_pct=copy.rain_chance_pct,
             rain_in_1h=copy.rain_in_1h,
             rain_in_2h=copy.rain_in_2h,
-            raining_here=(
-                False
-                if stationary_clutter
-                else is_raining_here(distance, hit.dbz, hit.support)
-            ),
+            raining_here=is_raining_here(distance, hit.dbz, hit.support),
             radar_timestamp=radar_timestamp,
             radar_age_minutes=radar_age,
             sky_state=copy.sky_state,

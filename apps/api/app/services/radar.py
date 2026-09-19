@@ -10,8 +10,7 @@ from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
 from app.schemas.radar import RadarFrameSchema, RadarResponse
-from app.services.clutter_track import get_clutter_tracker
-from app.services.radar_dbz import filter_tile_below_dbz, mask_clutter_in_tile
+from app.services.radar_dbz import filter_tile_below_dbz
 
 RAINVIEWER_MAPS_URL = "https://api.rainviewer.com/public/weather-maps.json"
 CACHE_KEY = "radar:frames:v2"
@@ -92,17 +91,11 @@ class RadarService:
         if z < 0 or z > 7 or x < 0 or y < 0:
             raise ValueError("Invalid tile coordinates")
 
-        cache_key = f"radar:tile:v5:{unix_time}:{z}:{x}:{y}"
+        cache_key = f"radar:tile:v4:{unix_time}:{z}:{x}:{y}"
         try:
             cached = get_redis().get(cache_key)
             if cached:
-                filtered = base64.b64decode(cached)
-                clutter_cells = get_clutter_tracker().active_cells()
-                if clutter_cells:
-                    return mask_clutter_in_tile(
-                        filtered, z=z, x=x, y=y, clutter_cells=clutter_cells
-                    )
-                return filtered
+                return base64.b64decode(cached)
         except Exception:
             pass
 
@@ -144,13 +137,6 @@ class RadarService:
             )
         except Exception:
             pass
-
-        # Apply clutter mask after cache so newly marked cells hide without waiting TTL
-        clutter_cells = get_clutter_tracker().active_cells()
-        if clutter_cells:
-            filtered = mask_clutter_in_tile(
-                filtered, z=z, x=x, y=y, clutter_cells=clutter_cells
-            )
         return filtered
 
     async def _fetch_rainviewer(self) -> dict[str, Any]:
