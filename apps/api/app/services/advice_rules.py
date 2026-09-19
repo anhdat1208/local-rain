@@ -27,7 +27,10 @@ RAINING_HERE_M = 2_500
 # show a cell 3–4 km away regularly leaves the user completely dry.
 HERE_STRONG_M = 2_000
 HERE_MODERATE_M = 1_500
-HERE_WEAK_M = 800
+# Distances are measured to a sampled pixel centre, so standing inside a raining pixel
+# still reads as several hundred metres away. Anything under one pixel width would call
+# that dry while the overlay paints rain on the same spot.
+HERE_WEAK_M = 1_200
 # Below this the echo is often aloft only (virga) or plain clutter — no wet ground
 CONFIRM_DBZ = 30.0
 # At this strength the cell reliably reaches the ground as real rain

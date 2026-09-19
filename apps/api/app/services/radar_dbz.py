@@ -144,8 +144,18 @@ def _filter_lut() -> list[tuple[int, int, int, int]]:
     return lut
 
 
-def filter_tile_below_dbz(png_bytes: bytes, min_dbz: float = MAP_MIN_DBZ) -> bytes:
-    """Hide weak fringe; map shows ≥35 dBZ cores that usually mean real rain."""
+def filter_tile_below_dbz(
+    png_bytes: bytes,
+    min_dbz: float = MAP_MIN_DBZ,
+    *,
+    clutter: bytes | None = None,
+) -> bytes:
+    """Hide weak fringe; map shows ≥35 dBZ cores that usually mean real rain.
+
+    `clutter` is an optional one-bit-per-pixel mask of parked echoes to drop as well
+    (see `app.services.clutter_mask`). Indexing it by pixel order keeps this a pure
+    lookup — no per-pixel coordinate maths.
+    """
     image = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     src = memoryview(image.tobytes())
     out = bytearray(len(src))
@@ -157,6 +167,9 @@ def filter_tile_below_dbz(png_bytes: bytes, min_dbz: float = MAP_MIN_DBZ) -> byt
         for i in range(0, len(src), 4):
             a = src[i + 3]
             if a < 80:
+                continue
+            index = i >> 2
+            if clutter is not None and clutter[index >> 3] & (1 << (index & 7)):
                 continue
             idx = (
                 ((src[i] >> shift) * bins + (src[i + 1] >> shift)) * bins
@@ -178,10 +191,13 @@ def filter_tile_below_dbz(png_bytes: bytes, min_dbz: float = MAP_MIN_DBZ) -> byt
                 dbz = pixel_dbz(r, g, b, a)
                 if a < 80 or dbz < min_dbz:
                     continue
+                index = y * width + x
+                if clutter is not None and clutter[index >> 3] & (1 << (index & 7)):
+                    continue
                 nr, ng, nb = dbz_to_cool_color(dbz)
                 boost = intensity_from_dbz(dbz)
                 alpha = min(255, max(135, int(150 + boost * 105)))
-                oi = (y * width + x) * 4
+                oi = index * 4
                 out[oi] = nr
                 out[oi + 1] = ng
                 out[oi + 2] = nb

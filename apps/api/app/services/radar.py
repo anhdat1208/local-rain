@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,6 +11,7 @@ from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
 from app.schemas.radar import RadarFrameSchema, RadarResponse
+from app.services.clutter_mask import clutter_mask
 from app.services.radar_dbz import filter_tile_below_dbz
 
 RAINVIEWER_MAPS_URL = "https://api.rainviewer.com/public/weather-maps.json"
@@ -19,6 +21,9 @@ STALE_CACHE_KEY = "radar:frames:stale:v1"
 STALE_UPSTREAM_CACHE_KEY = "radar:upstreams:stale:v1"
 CACHE_TTL_SECONDS = 180
 TILE_CACHE_TTL_SECONDS = 180
+# A filtered tile is keyed by frame and clutter generation, so its bytes never change —
+# no reason to re-filter it every 3 minutes.
+FILTERED_TILE_TTL_SECONDS = 900
 STALE_CACHE_TTL_SECONDS = 2 * 60 * 60
 # Unsmoothed tiles — same as nearest-rain scan (sharp cores, less soft fringe)
 UPSTREAM_OPTIONS = "2/0_1.png"
@@ -87,11 +92,32 @@ class RadarService:
             raise RuntimeError(f"No upstream radar tile for frame {unix_time}")
         return template
 
+    def upstream_map(self) -> dict[int, str]:
+        raw = self._read_upstreams() or self._read_stale_upstreams()
+        out: dict[int, str] = {}
+        for key, template in raw.items():
+            try:
+                out[int(key)] = template
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def newest_past_unix(self, upstreams: dict[int, str] | None = None) -> int | None:
+        """Latest frame that has actually happened; nowcast frames are extrapolations."""
+        times = (upstreams if upstreams is not None else self.upstream_map()).keys()
+        now = int(time.time())
+        past = [unix_time for unix_time in times if unix_time <= now]
+        return max(past) if past else None
+
     async def get_filtered_tile(self, unix_time: int, z: int, x: int, y: int) -> bytes:
         if z < 0 or z > 7 or x < 0 or y < 0:
             raise ValueError("Invalid tile coordinates")
 
-        cache_key = f"radar:tile:v4:{unix_time}:{z}:{x}:{y}"
+        upstreams = self.upstream_map()
+        # One clutter generation for every frame, so scrubbing the timeline does not
+        # make parked echoes blink in and out.
+        newest = self.newest_past_unix(upstreams)
+        cache_key = f"radar:tile:v5:{newest}:{unix_time}:{z}:{x}:{y}"
         try:
             cached = get_redis().get(cache_key)
             if cached:
@@ -128,11 +154,22 @@ class RadarService:
             except Exception:
                 pass
 
-        filtered = filter_tile_below_dbz(raw)
+        mask: bytes | None = None
+        if newest is not None:
+            mask = await clutter_mask(
+                client=get_http_client(),
+                upstreams=upstreams,
+                newest=newest,
+                z=z,
+                x=x,
+                y=y,
+            )
+
+        filtered = filter_tile_below_dbz(raw, clutter=mask)
         try:
             get_redis().setex(
                 cache_key,
-                TILE_CACHE_TTL_SECONDS,
+                FILTERED_TILE_TTL_SECONDS,
                 base64.b64encode(filtered).decode("ascii"),
             )
         except Exception:

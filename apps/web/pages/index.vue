@@ -73,11 +73,12 @@ async function refreshNearestRain(opts?: { includeVectors?: boolean }) {
   const lng = store.longitude ?? fallbackCoords.longitude;
   const includeVectors = opts?.includeVectors !== false;
   try {
-    // Card first — vectors are decorative and share BE motion work
-    await fetchNearestRain(lat, lng);
+    // Vectors share the card's motion work, but the BE singleflights it, so both can fly together
+    const card = fetchNearestRain(lat, lng);
     if (includeVectors) {
       void fetchRainVectors(lat, lng);
     }
+    await card;
   } finally {
     nearestInFlight = false;
   }
@@ -266,19 +267,16 @@ onMounted(() => {
     // Refetch once if GPS moved meaningfully from the seed coords
     const lat = store.latitude;
     const lng = store.longitude;
-    if (
-      lat != null &&
-      lng != null &&
-      (prevLat == null ||
-        prevLng == null ||
-        Math.abs(lat - prevLat) > 0.002 ||
-        Math.abs(lng - prevLng) > 0.002)
-    ) {
-      await refreshNearestRain();
-    }
-    if (lat != null && lng != null) {
-      prefetchAround(lat, lng);
-    }
+    if (lat == null || lng == null) return;
+    const moved =
+      prevLat == null ||
+      prevLng == null ||
+      Math.abs(lat - prevLat) > 0.002 ||
+      Math.abs(lng - prevLng) > 0.002;
+    // Staying put means the critical-path prefetch already warmed these tiles
+    if (!moved) return;
+    await refreshNearestRain();
+    prefetchAround(lat, lng);
   })();
 });
 

@@ -23,6 +23,7 @@ from app.services.advice_rules import (
     normalize_lang,
 )
 from app.services.clouds import CloudCoverSample, CloudsService
+from app.services.clutter_mask import clutter_mask, is_clutter, peek_clutter_mask
 from app.services.radar import RadarService
 from app.services.radar_dbz import (
     MAX_DBZ,
@@ -99,6 +100,17 @@ NEAR_CORE_BONUS_M = 6_000.0
 NEAR_CORE_RADIUS_M = 5_000.0
 MID_CORE_BONUS_M = 2_500.0
 MID_CORE_RADIUS_M = 8_000.0
+
+# Request-scoped clutter generation so every scan in one request agrees with the map
+_clutter_var: contextvars.ContextVar[tuple[int, dict[int, str]] | None] = contextvars.ContextVar(
+    "clutter_ctx", default=None
+)
+
+# Motion re-scans the same tiles once per baseline frame; without this memo each pass
+# would re-hit Redis for masks that cannot have changed inside one request.
+_clutter_masks_var: contextvars.ContextVar[
+    dict[tuple[int, int], bytes | None] | None
+] = contextvars.ContextVar("clutter_masks", default=None)
 
 # Request-scoped PNG bytes so hit-scan + motion share the same RainViewer GETs
 _tile_bytes_var: contextvars.ContextVar[dict[str, bytes | None] | None] = contextvars.ContextVar(
@@ -181,13 +193,17 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v21:{locale}:{current.unix_time}:"
+            f"nearest-rain:v22:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
         if cached is not None:
             return self._with_fresh_age(cached, current)
 
+        clutter_token = _clutter_var.set(
+            (current.unix_time, self._radar_service.upstream_map())
+        )
+        masks_token = _clutter_masks_var.set({})
         tile_token = _tile_bytes_var.set({})
         try:
             client = get_http_client()
@@ -231,6 +247,8 @@ class NearestRainService:
                 velocity = motion_ctx.velocity
         finally:
             _tile_bytes_var.reset(tile_token)
+            _clutter_masks_var.reset(masks_token)
+            _clutter_var.reset(clutter_token)
 
         if current_hit is not None and current_hit.distance_m > MAX_NEARBY_M:
             current_hit = None
@@ -265,13 +283,17 @@ class NearestRainService:
 
         radius_m = max(20_000.0, min(200_000.0, radius_km * 1000.0))
         cache_key = (
-            f"rain-vectors:v5:{current.unix_time}:"
+            f"rain-vectors:v6:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}:{int(radius_m)}:{limit}"
         )
         cached = self._read_vectors_cache(cache_key)
         if cached is not None:
             return cached
 
+        clutter_token = _clutter_var.set(
+            (current.unix_time, self._radar_service.upstream_map())
+        )
+        masks_token = _clutter_masks_var.set({})
         tile_token = _tile_bytes_var.set({})
         try:
             client = get_http_client()
@@ -285,6 +307,8 @@ class NearestRainService:
             )
         finally:
             _tile_bytes_var.reset(tile_token)
+            _clutter_masks_var.reset(masks_token)
+            _clutter_var.reset(clutter_token)
 
         global_velocity = context.velocity
         if global_velocity is None or not context.baselines:
@@ -804,6 +828,12 @@ class NearestRainService:
 
         for radius in range(0, max_radius + 1):
             tiles = self._tiles_for_ring(origin_tile_x, origin_tile_y, radius)
+            masks = await asyncio.gather(
+                *(
+                    self._clutter_for_tile(client, tile_x, tile_y, compute=radius == 0)
+                    for tile_x, tile_y in tiles
+                )
+            )
             hits = await asyncio.gather(
                 *(
                     self._scan_tile(
@@ -813,8 +843,9 @@ class NearestRainService:
                         tile_y=tile_y,
                         ref_lat=ref_lat,
                         ref_lon=ref_lon,
+                        clutter=mask,
                     )
-                    for tile_x, tile_y in tiles
+                    for (tile_x, tile_y), mask in zip(tiles, masks, strict=True)
                 )
             )
             for hit in hits:
@@ -883,6 +914,12 @@ class NearestRainService:
                 max_lat_delta=max_lat_delta,
                 max_lon_delta=max_lon_delta,
                 field=field,
+                # Peek only: this runs per baseline frame, so paying for a mask build
+                # here would multiply the cold path. A parked echo also drags the
+                # velocity estimate towards zero, so dropping it helps motion too.
+                clutter=await self._clutter_for_tile(
+                    client, tile_x, tile_y, compute=False
+                ),
             )
         return field
 
@@ -935,6 +972,7 @@ class NearestRainService:
         max_lat_delta: float,
         max_lon_delta: float,
         field: dict[tuple[int, int], float],
+        clutter: bytes | None = None,
     ) -> None:
         pixels = image.load()
         width, height = image.size
@@ -943,6 +981,8 @@ class NearestRainService:
                 r, g, b, a = pixels[px, py]
                 dbz = pixel_dbz(r, g, b, a)
                 if dbz < DETECT_MIN_DBZ:
+                    continue
+                if is_clutter(clutter, px, py):
                     continue
                 lat, lon = tile_pixel_to_latlon(
                     tile_x,
@@ -1013,6 +1053,7 @@ class NearestRainService:
         tile_y: int,
         ref_lat: float,
         ref_lon: float,
+        clutter: bytes | None = None,
     ) -> RainHit | None:
         raw = await self._fetch_tile_bytes(client, tile_url_template, tile_x, tile_y)
         if raw is None:
@@ -1033,6 +1074,9 @@ class NearestRainService:
                 r, g, b, a = pixels[px, py]
                 dbz = pixel_dbz(r, g, b, a)
                 if dbz < LOCAL_SOFT_DBZ:
+                    continue
+                # The map hides these pixels, so the card must not advise on them either
+                if is_clutter(clutter, px, py):
                     continue
                 rain_lat, rain_lon = tile_pixel_to_latlon(
                     tile_x,
@@ -1089,6 +1133,49 @@ class NearestRainService:
         consider(hard, DETECT_MIN_SUPPORT, None)
         consider(soft, LOCAL_MIN_SUPPORT, LOCAL_RADIUS_M)
         return best
+
+    async def _clutter_for_tile(
+        self,
+        client: httpx.AsyncClient,
+        tile_x: int,
+        tile_y: int,
+        *,
+        compute: bool,
+    ) -> bytes | None:
+        """Parked-echo mask for a scanned tile, shared with the map overlay.
+
+        Building a mask costs a lookback window of upstream GETs, so only the tile the
+        user stands on is worth computing here — that is the one that decides
+        "raining here". Neighbours reuse whatever the map path already cached.
+        """
+        ctx = _clutter_var.get()
+        if ctx is None:
+            return None
+        newest, upstreams = ctx
+
+        memo = _clutter_masks_var.get()
+        key = (tile_x, tile_y)
+        if memo is not None and key in memo:
+            cached = memo[key]
+            # A peek that missed is still worth retrying once we are willing to build
+            if cached is not None or not compute:
+                return cached
+
+        if compute:
+            mask = await clutter_mask(
+                client=client,
+                upstreams=upstreams,
+                newest=newest,
+                z=RADAR_ZOOM,
+                x=tile_x,
+                y=tile_y,
+            )
+        else:
+            mask = peek_clutter_mask(newest, RADAR_ZOOM, tile_x, tile_y)
+
+        if memo is not None:
+            memo[key] = mask
+        return mask
 
     def _analysis_tile_url(self, tile_url_template: str, tile_x: int, tile_y: int) -> str:
         return (
