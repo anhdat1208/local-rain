@@ -117,7 +117,7 @@ class RadarService:
         # One clutter generation for every frame, so scrubbing the timeline does not
         # make parked echoes blink in and out.
         newest = self.newest_past_unix(upstreams)
-        cache_key = f"radar:tile:v5:{newest}:{unix_time}:{z}:{x}:{y}"
+        cache_key = f"radar:tile:v6:{newest}:{unix_time}:{z}:{x}:{y}"
         try:
             cached = get_redis().get(cache_key)
             if cached:
@@ -165,7 +165,7 @@ class RadarService:
                 y=y,
             )
 
-        filtered = filter_tile_below_dbz(raw, clutter=mask)
+        filtered = filter_tile_below_dbz(raw, clutter=mask, smooth=True)
         try:
             get_redis().setex(
                 cache_key,

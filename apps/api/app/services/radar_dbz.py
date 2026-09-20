@@ -14,6 +14,17 @@ MIN_DBZ = MAP_MIN_DBZ
 MAX_DBZ = 60
 COLOR_MATCH_MAX_DIST = 48.0
 
+# RainViewer stops at z7, where one pixel is ~1.2 km, but the map runs at street zoom.
+# Upscaling the *classified* tile keeps every dBZ decision on exact palette colours
+# while sparing the viewer 1.2 km staircases. Serving 2x pixels is the @2x tile pattern,
+# so MapLibre still addresses the source as 256 px tiles.
+#
+# Bicubic alone is enough: MapLibre then stretches the tile ~64x with its own linear
+# resampling, which dwarfs any extra blur here. An explicit blur also bleeds RGB into
+# transparent pixels and rings every cell with a dark halo, because only `resize`
+# premultiplies alpha.
+SMOOTH_UPSCALE = 2
+
 # RainViewer Universal Blue (rain) — first series in official color table
 UNIVERSAL_BLUE_RAIN: tuple[tuple[int, int, int, int], ...] = (
     (136, 221, 238, 15),
@@ -149,12 +160,16 @@ def filter_tile_below_dbz(
     min_dbz: float = MAP_MIN_DBZ,
     *,
     clutter: bytes | None = None,
+    smooth: bool = False,
 ) -> bytes:
     """Hide weak fringe; map shows ≥35 dBZ cores that usually mean real rain.
 
     `clutter` is an optional one-bit-per-pixel mask of parked echoes to drop as well
     (see `app.services.clutter_mask`). Indexing it by pixel order keeps this a pure
     lookup — no per-pixel coordinate maths.
+
+    `smooth` upscales the result with bicubic interpolation so street-level zoom shows
+    soft cells instead of 1.2 km staircases.
     """
     image = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     src = memoryview(image.tobytes())
@@ -204,6 +219,11 @@ def filter_tile_below_dbz(
                 out[oi + 3] = alpha
 
     filtered = Image.frombytes("RGBA", image.size, bytes(out))
+    if smooth:
+        filtered = filtered.resize(
+            (filtered.width * SMOOTH_UPSCALE, filtered.height * SMOOTH_UPSCALE),
+            Image.BICUBIC,
+        )
     buf = io.BytesIO()
     filtered.save(buf, format="PNG", compress_level=3)
     return buf.getvalue()
