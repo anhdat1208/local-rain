@@ -338,6 +338,8 @@ function upsertRadarBuffer(instance: Map, bufferIndex: number, tileUrl: string, 
     existing.setTiles([tileUrl]);
   } else {
     // RainViewer radar tiles only exist for z0–z7; maxzoom lets MapLibre overzoom.
+    // The API serves these pre-smoothed at 2x pixels, so default linear resampling
+    // reads as soft cells rather than 1.2 km blocks.
     instance.addSource(buffer.sourceId, {
       type: "raster",
       tiles: [tileUrl],
@@ -357,9 +359,8 @@ function upsertRadarBuffer(instance: Map, bufferIndex: number, tileUrl: string, 
         "raster-opacity": opacity,
         "raster-opacity-transition": { duration: CROSSFADE_MS, delay: 0 },
         "raster-fade-duration": 0,
-        // A radar pixel is ~1.2 km wide at z7, so the default linear resampling
-        // smears a few cells into one continuous wash across the whole viewport.
-        "raster-resampling": "nearest",
+        // Linear on the 2x classified tile: soft blobs, not 1.2 km staircases.
+        "raster-resampling": "linear",
       },
     });
   } else {

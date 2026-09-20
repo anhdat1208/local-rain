@@ -13,7 +13,12 @@ from app.services.clutter_mask import (
     is_clutter,
     pick_clutter_frames,
 )
-from app.services.radar_dbz import filter_tile_below_dbz, pixel_dbz
+from app.services.radar_dbz import (
+    SMOOTH_UPSCALE,
+    dbz_to_cool_color,
+    filter_tile_below_dbz,
+    pixel_dbz,
+)
 
 # RainViewer Universal Blue swatches
 DBZ_50 = (193, 0, 0, 255)
@@ -133,6 +138,49 @@ def test_filter_drops_clutter_pixels_but_keeps_real_rain() -> None:
 def test_filter_without_mask_is_unchanged() -> None:
     png = tile({(3, 3): DBZ_50, (60, 60): DBZ_40})
     assert filter_tile_below_dbz(png, clutter=None) == filter_tile_below_dbz(png)
+
+
+def test_smooth_upscales_and_fades_cell_edges() -> None:
+    png = tile({(128, 128): DBZ_50})
+    smoothed = Image.open(
+        io.BytesIO(filter_tile_below_dbz(png, smooth=True))
+    ).convert("RGBA")
+
+    assert smoothed.size == (TILE_SIZE * SMOOTH_UPSCALE, TILE_SIZE * SMOOTH_UPSCALE)
+
+    core = (128 * SMOOTH_UPSCALE, 128 * SMOOTH_UPSCALE)
+    assert smoothed.getpixel(core)[3] > 0
+
+    # The cell fades outwards instead of stopping at a hard 1.2 km edge
+    fringe = (core[0] + 2, core[1])
+    assert 0 < smoothed.getpixel(fringe)[3] < smoothed.getpixel(core)[3]
+
+
+def test_smooth_does_not_ring_cells_with_a_dark_halo() -> None:
+    """Only `resize` premultiplies alpha; a plain blur here would bleed RGB to black."""
+    png = tile({(128, 128): DBZ_50})
+    smoothed = Image.open(
+        io.BytesIO(filter_tile_below_dbz(png, smooth=True))
+    ).convert("RGBA")
+
+    core_rgb = dbz_to_cool_color(50.0)
+    for r, g, b, a in smoothed.getdata():
+        if a == 0:
+            continue
+        # Every visible pixel must stay on the rain palette, never darken towards black
+        assert max(r, g, b) >= min(core_rgb) // 2, f"fringe darkened to {(r, g, b)}"
+
+
+def test_smooth_still_drops_clutter() -> None:
+    spot = (64, 64)
+    png = tile({spot: DBZ_50})
+    mask = hot_bitset(png)
+
+    smoothed = Image.open(
+        io.BytesIO(filter_tile_below_dbz(png, clutter=mask, smooth=True))
+    ).convert("RGBA")
+
+    assert max(smoothed.getchannel("A").getdata()) == 0
 
 
 def test_filter_never_hides_echo_below_the_clutter_floor() -> None:
