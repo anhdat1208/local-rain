@@ -15,9 +15,10 @@ async def get_nearest_rain(
     lat: float = Query(..., ge=-90, le=90),
     lng: float = Query(..., ge=-180, le=180),
     lang: str = Query("vi"),
+    refine: bool = Query(False),
     service: NearestRainService = Depends(get_nearest_rain_service),
 ) -> NearestRainResponse:
-    return await service.find_nearest(lat, lng, lang=lang)
+    return await service.find_nearest(lat, lng, lang=lang, force_refine=refine)
 
 
 @router.get(

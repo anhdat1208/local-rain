@@ -180,6 +180,7 @@ class NearestRainService:
         latitude: float,
         longitude: float,
         lang: str | None = "vi",
+        force_refine: bool = False,
     ) -> NearestRainResponse:
         locale = normalize_lang(lang)
         frames = await self._radar_service.get_radar_frames()
@@ -226,7 +227,7 @@ class NearestRainService:
                     self._clouds_service.sample_cover(latitude, longitude),
                 )
                 velocity = cached_velocity.velocity
-            elif self._velocity_warm_requested(warm_key):
+            elif force_refine or self._velocity_warm_requested(warm_key):
                 # Same velocity field that drives the map arrows, so both stay consistent
                 async def warm_motion() -> MotionContext | None:
                     try:

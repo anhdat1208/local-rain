@@ -138,11 +138,12 @@ class RadarService:
         # If a peek mask already exists, promote to full filtered immediately
         peek = peek_clutter_mask(newest, z, x, y) if newest is not None else None
         use_fast = z >= CLUTTER_MIN_ZOOM and peek is None
+        fast_cache_hit = False
         if use_fast:
             try:
                 cached_fast = get_redis().get(fast_key)
                 if cached_fast:
-                    return base64.b64decode(cached_fast), "fast"
+                    fast_cache_hit = True
             except Exception:
                 pass
 
@@ -174,7 +175,7 @@ class RadarService:
             except Exception:
                 pass
 
-        if use_fast:
+        if use_fast and not fast_cache_hit:
             # Street/overzoom cold path: never await 9-frame clutter here
             filtered = filter_tile_below_dbz(raw, clutter=None, smooth=True)
             try:

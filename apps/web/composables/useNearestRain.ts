@@ -83,16 +83,23 @@ export function useNearestRain() {
       writeStale(latitude, longitude, data);
 
       if (data.motionPending) {
-        try {
-          const refined = await apiFetch<NearestRainResponse>("/api/nearest-rain", {
-            query: { lat: latitude, lng: longitude, lang: locale.value },
-            timeout: 16_000,
-          });
-          store.setResult(refined);
-          writeStale(latitude, longitude, refined);
-        } catch {
-          // Keep fast card
-        }
+        void (async () => {
+          try {
+            const refined = await apiFetch<NearestRainResponse>("/api/nearest-rain", {
+              query: {
+                lat: latitude,
+                lng: longitude,
+                lang: locale.value,
+                refine: 1,
+              },
+              timeout: 16_000,
+            });
+            store.setResult(refined);
+            writeStale(latitude, longitude, refined);
+          } catch {
+            // Keep fast card
+          }
+        })();
       }
     } catch {
       if (!stale) {

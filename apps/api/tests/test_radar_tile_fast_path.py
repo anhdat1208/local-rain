@@ -102,12 +102,14 @@ async def test_full_cache_hit_skips_upstream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fast_cache_hit_skips_upstream() -> None:
+async def test_fast_cache_hit_awaits_clutter_mask_and_returns_full() -> None:
     raw = _png()
     service = RadarService()
     redis = MagicMock()
-    # Full miss, then fast hit
-    redis.get.side_effect = [None, base64.b64encode(raw).decode("ascii")]
+    # Full miss, fast hit, then raw hit for refinement
+    encoded = base64.b64encode(raw).decode("ascii")
+    redis.get.side_effect = [None, encoded, encoded]
+    mask = b"\x00" * (TILE_SIZE * TILE_SIZE // 8)
 
     with (
         patch("app.services.radar.get_redis", return_value=redis),
@@ -115,11 +117,14 @@ async def test_fast_cache_hit_skips_upstream() -> None:
         patch.object(service, "upstream_map", return_value={1_700_000_000: "https://example/{z}/{x}/{y}"}),
         patch.object(service, "newest_past_unix", return_value=1_700_000_000),
         patch("app.services.radar.peek_clutter_mask", return_value=None),
-        patch.object(service, "upstream_for_frame", AsyncMock()) as upstream,
+        patch("app.services.radar.clutter_mask", AsyncMock(return_value=mask)) as full_mask,
+        patch("app.services.radar.filter_tile_below_dbz", return_value=raw) as filt,
+        patch.object(service, "upstream_for_frame", AsyncMock(return_value="https://example/{z}/{x}/{y}")),
     ):
         png, kind = await service.get_filtered_tile_with_kind(1_700_000_000, 7, 100, 60)
 
-    assert kind == "fast"
+    assert kind == "full"
     assert png == raw
-    http.assert_not_called()
-    upstream.assert_not_called()
+    full_mask.assert_awaited_once()
+    assert filt.call_args.kwargs["clutter"] == mask
+    http.return_value.get.assert_not_called()

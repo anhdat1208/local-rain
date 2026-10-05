@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.schemas.radar import RadarFrameSchema, RadarResponse
+from app.routers.nearest_rain import get_nearest_rain
 from app.services.clouds import CloudCoverSample
 from app.services.nearest_rain import MotionContext, NearestRainService
 
@@ -38,6 +39,27 @@ def _service() -> NearestRainService:
         return_value=CloudCoverSample(cover=0.1, mode="day", ok=True)
     )
     return NearestRainService(radar, clouds)
+
+
+@pytest.mark.asyncio
+async def test_router_forwards_refine_query_flag() -> None:
+    service = MagicMock()
+    service.find_nearest = AsyncMock(return_value=MagicMock())
+
+    await get_nearest_rain(
+        lat=10.77,
+        lng=106.70,
+        lang="vi",
+        refine=True,
+        service=service,
+    )
+
+    service.find_nearest.assert_awaited_once_with(
+        10.77,
+        106.70,
+        lang="vi",
+        force_refine=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -94,6 +116,45 @@ async def test_second_request_builds_motion_when_warm_marked() -> None:
 
     assert result.motion_pending is False
     motion.assert_awaited()
+    clear.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_force_refine_builds_motion_without_warm_marker() -> None:
+    service = _service()
+    motion_ctx = MotionContext(
+        current_field={},
+        baselines=[],
+        velocity=(0.01, -0.02),
+    )
+
+    with (
+        patch.object(
+            service,
+            "_read_cache",
+            return_value=MagicMock(motion_pending=True),
+        ),
+        patch.object(service, "_read_velocity_cache", return_value=None),
+        patch.object(service, "_velocity_warm_requested", return_value=False),
+        patch.object(service, "_clear_velocity_warm") as clear,
+        patch.object(service, "_find_nearest_hit", AsyncMock(return_value=None)),
+        patch.object(
+            service,
+            "_shared_motion_context",
+            AsyncMock(return_value=motion_ctx),
+        ) as motion,
+        patch.object(service, "_write_cache"),
+        patch("app.services.nearest_rain.get_http_client", return_value=MagicMock()),
+    ):
+        result = await service.find_nearest(
+            10.77,
+            106.70,
+            lang="vi",
+            force_refine=True,
+        )
+
+    assert result.motion_pending is False
+    motion.assert_awaited_once()
     clear.assert_called_once()
 
 
