@@ -228,26 +228,34 @@ class NearestRainService:
                 velocity = cached_velocity.velocity
             elif self._velocity_warm_requested(warm_key):
                 # Same velocity field that drives the map arrows, so both stay consistent
-                current_hit, motion_ctx, clouds = await asyncio.gather(
-                    self._find_nearest_hit(
-                        client=client,
-                        tile_url_template=current_upstream,
-                        ref_lat=latitude,
-                        ref_lon=longitude,
-                        max_radius=MAX_TILE_RADIUS,
-                    ),
-                    self._shared_motion_context(
-                        client=client,
-                        frames=frames.frames,
-                        current=current,
-                        latitude=latitude,
-                        longitude=longitude,
-                        radius_m=VELOCITY_RADIUS_M,
-                    ),
-                    self._clouds_service.sample_cover(latitude, longitude),
-                )
-                velocity = motion_ctx.velocity
-                self._clear_velocity_warm(warm_key)
+                async def warm_motion() -> MotionContext | None:
+                    try:
+                        return await self._shared_motion_context(
+                            client=client,
+                            frames=frames.frames,
+                            current=current,
+                            latitude=latitude,
+                            longitude=longitude,
+                            radius_m=VELOCITY_RADIUS_M,
+                        )
+                    except Exception:
+                        return None
+
+                try:
+                    current_hit, motion_ctx, clouds = await asyncio.gather(
+                        self._find_nearest_hit(
+                            client=client,
+                            tile_url_template=current_upstream,
+                            ref_lat=latitude,
+                            ref_lon=longitude,
+                            max_radius=MAX_TILE_RADIUS,
+                        ),
+                        warm_motion(),
+                        self._clouds_service.sample_cover(latitude, longitude),
+                    )
+                finally:
+                    self._clear_velocity_warm(warm_key)
+                velocity = motion_ctx.velocity if motion_ctx is not None else None
             else:
                 # First cold request returns the useful hit/card without motion fan-out.
                 current_hit, clouds = await asyncio.gather(
