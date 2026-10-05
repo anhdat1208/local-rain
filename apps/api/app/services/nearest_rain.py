@@ -193,11 +193,11 @@ class NearestRainService:
 
         current = self._pick_current_frame(frames.frames)
         cache_key = (
-            f"nearest-rain:v22:{locale}:{current.unix_time}:"
+            f"nearest-rain:v23:{locale}:{current.unix_time}:"
             f"{round(latitude, 3)}:{round(longitude, 3)}"
         )
         cached = self._read_cache(cache_key)
-        if cached is not None:
+        if cached is not None and not cached.motion_pending:
             return self._with_fresh_age(cached, current)
 
         clutter_token = _clutter_var.set(
@@ -210,6 +210,8 @@ class NearestRainService:
             current_upstream = await self._radar_service.upstream_for_frame(current.unix_time)
             velocity_key = self._velocity_cache_key(current, latitude, longitude)
             cached_velocity = self._read_velocity_cache(velocity_key)
+            warm_key = self._velocity_warm_key(current, latitude, longitude)
+            motion_pending = False
 
             if cached_velocity is not None:
                 # Regional advection already known — skip multi-frame motion rebuild
@@ -224,7 +226,7 @@ class NearestRainService:
                     self._clouds_service.sample_cover(latitude, longitude),
                 )
                 velocity = cached_velocity.velocity
-            else:
+            elif self._velocity_warm_requested(warm_key):
                 # Same velocity field that drives the map arrows, so both stay consistent
                 current_hit, motion_ctx, clouds = await asyncio.gather(
                     self._find_nearest_hit(
@@ -245,6 +247,22 @@ class NearestRainService:
                     self._clouds_service.sample_cover(latitude, longitude),
                 )
                 velocity = motion_ctx.velocity
+                self._clear_velocity_warm(warm_key)
+            else:
+                # First cold request returns the useful hit/card without motion fan-out.
+                current_hit, clouds = await asyncio.gather(
+                    self._find_nearest_hit(
+                        client=client,
+                        tile_url_template=current_upstream,
+                        ref_lat=latitude,
+                        ref_lon=longitude,
+                        max_radius=MAX_TILE_RADIUS,
+                    ),
+                    self._clouds_service.sample_cover(latitude, longitude),
+                )
+                velocity = None
+                motion_pending = True
+                self._mark_velocity_warm(warm_key)
         finally:
             _tile_bytes_var.reset(tile_token)
             _clutter_masks_var.reset(masks_token)
@@ -260,7 +278,14 @@ class NearestRainService:
             velocity=velocity,
         )
         result = self._build_response(
-            latitude, longitude, current_hit, motion, locale, current, clouds
+            latitude,
+            longitude,
+            current_hit,
+            motion,
+            locale,
+            current,
+            clouds,
+            motion_pending,
         )
         # Always cache radar answer. Short TTL if cloud sample missed so we don't
         # lock a false "clear sky" badge for the full 2 minutes.
@@ -487,6 +512,35 @@ class NearestRainService:
             f"rain-velocity:v3:{current.unix_time}:"
             f"{round(latitude, 1)}:{round(longitude, 1)}"
         )
+
+    def _velocity_warm_key(
+        self,
+        current: RadarFrameSchema,
+        latitude: float,
+        longitude: float,
+    ) -> str:
+        return (
+            f"rain-velocity:warm:v1:{current.unix_time}:"
+            f"{round(latitude, 3)}:{round(longitude, 3)}"
+        )
+
+    def _velocity_warm_requested(self, key: str) -> bool:
+        try:
+            return bool(get_redis().get(key))
+        except Exception:
+            return False
+
+    def _mark_velocity_warm(self, key: str) -> None:
+        try:
+            get_redis().setex(key, 90, "1")
+        except Exception:
+            return
+
+    def _clear_velocity_warm(self, key: str) -> None:
+        try:
+            get_redis().delete(key)
+        except Exception:
+            return
 
     def _motion_from_velocity(
         self,
@@ -1214,6 +1268,7 @@ class NearestRainService:
         lang: Lang,
         frame: RadarFrameSchema | None = None,
         clouds: CloudCoverSample | None = None,
+        motion_pending: bool = False,
     ) -> NearestRainResponse:
         radar_timestamp, radar_age = self._frame_age(frame)
         cloud_cover = (
@@ -1233,7 +1288,12 @@ class NearestRainService:
                 else "No rain detected nearby."
             )
             return self._empty_result(
-                msg, lang, radar_timestamp, radar_age, cloud_cover=cloud_cover
+                msg,
+                lang,
+                radar_timestamp,
+                radar_age,
+                cloud_cover=cloud_cover,
+                motion_pending=motion_pending,
             )
 
         distance = int(round(hit.distance_m))
@@ -1292,6 +1352,7 @@ class NearestRainService:
             radar_age_minutes=radar_age,
             sky_state=copy.sky_state,
             cloud_cover_pct=cloud_pct,
+            motion_pending=motion_pending,
         )
 
     def _frame_age(self, frame: RadarFrameSchema | None) -> tuple[str | None, int]:
@@ -1315,6 +1376,7 @@ class NearestRainService:
         radar_timestamp: str | None = None,
         radar_age_minutes: int = 0,
         cloud_cover: float | None = None,
+        motion_pending: bool = False,
     ) -> NearestRainResponse:
         copy = build_advice(
             has_rain=False,
@@ -1363,6 +1425,7 @@ class NearestRainService:
             radar_age_minutes=radar_age_minutes,
             sky_state=copy.sky_state,
             cloud_cover_pct=cloud_pct,
+            motion_pending=motion_pending,
         )
 
     def _read_cache(self, key: str) -> NearestRainResponse | None:
