@@ -54,3 +54,6 @@ scripts/e2e/*.png
 *.egg-info/
 .eggs/
 *.sqlite3
+
+# Agent SDD scratch (briefs/reports/diffs)
+.superpowers/
