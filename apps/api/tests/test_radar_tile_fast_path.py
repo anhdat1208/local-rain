@@ -99,3 +99,27 @@ async def test_full_cache_hit_skips_upstream() -> None:
     assert kind == "full"
     assert png == raw
     http.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fast_cache_hit_skips_upstream() -> None:
+    raw = _png()
+    service = RadarService()
+    redis = MagicMock()
+    # Full miss, then fast hit
+    redis.get.side_effect = [None, base64.b64encode(raw).decode("ascii")]
+
+    with (
+        patch("app.services.radar.get_redis", return_value=redis),
+        patch("app.services.radar.get_http_client") as http,
+        patch.object(service, "upstream_map", return_value={1_700_000_000: "https://example/{z}/{x}/{y}"}),
+        patch.object(service, "newest_past_unix", return_value=1_700_000_000),
+        patch("app.services.radar.peek_clutter_mask", return_value=None),
+        patch.object(service, "upstream_for_frame", AsyncMock()) as upstream,
+    ):
+        png, kind = await service.get_filtered_tile_with_kind(1_700_000_000, 7, 100, 60)
+
+    assert kind == "fast"
+    assert png == raw
+    http.assert_not_called()
+    upstream.assert_not_called()
