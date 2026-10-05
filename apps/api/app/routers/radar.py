@@ -1,7 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.schemas.radar import RadarResponse
-from app.services.radar import RadarService, get_radar_service
+from app.services.radar import (
+    FAST_CACHE_CONTROL,
+    FULL_CACHE_CONTROL,
+    RadarService,
+    get_radar_service,
+)
 
 router = APIRouter(tags=["radar"])
 
@@ -27,11 +32,12 @@ async def get_radar_tile(
     if z < 0 or z > 7 or x < 0 or y < 0 or unix_time < 0:
         raise HTTPException(status_code=400, detail="Invalid tile coordinates")
     try:
-        png = await radar_service.get_filtered_tile(unix_time, z, x, y)
+        png, kind = await radar_service.get_filtered_tile_with_kind(unix_time, z, x, y)
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Unable to fetch radar tile") from exc
+    cache_control = FAST_CACHE_CONTROL if kind == "fast" else FULL_CACHE_CONTROL
     return Response(
         content=png,
         media_type="image/png",
-        headers={"Cache-Control": "public, max-age=120"},
+        headers={"Cache-Control": cache_control},
     )

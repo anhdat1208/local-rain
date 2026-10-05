@@ -11,7 +11,7 @@ from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
 from app.schemas.radar import RadarFrameSchema, RadarResponse
-from app.services.clutter_mask import clutter_mask
+from app.services.clutter_mask import CLUTTER_MIN_ZOOM, clutter_mask, peek_clutter_mask
 from app.services.radar_dbz import filter_tile_below_dbz
 
 RAINVIEWER_MAPS_URL = "https://api.rainviewer.com/public/weather-maps.json"
@@ -24,6 +24,10 @@ TILE_CACHE_TTL_SECONDS = 180
 # A filtered tile is keyed by frame and clutter generation, so its bytes never change —
 # no reason to re-filter it every 3 minutes.
 FILTERED_TILE_TTL_SECONDS = 900
+FAST_FILTERED_TILE_TTL_SECONDS = 60
+FAST_TILE_CACHE_PREFIX = "radar:tile:fast:v1"
+FAST_CACHE_CONTROL = "public, max-age=45"
+FULL_CACHE_CONTROL = "public, max-age=120"
 STALE_CACHE_TTL_SECONDS = 2 * 60 * 60
 # Unsmoothed tiles — same as nearest-rain scan (sharp cores, less soft fringe)
 UPSTREAM_OPTIONS = "2/0_1.png"
@@ -110,20 +114,29 @@ class RadarService:
         return max(past) if past else None
 
     async def get_filtered_tile(self, unix_time: int, z: int, x: int, y: int) -> bytes:
+        png, _kind = await self.get_filtered_tile_with_kind(unix_time, z, x, y)
+        return png
+
+    async def get_filtered_tile_with_kind(
+        self, unix_time: int, z: int, x: int, y: int
+    ) -> tuple[bytes, str]:
         if z < 0 or z > 7 or x < 0 or y < 0:
             raise ValueError("Invalid tile coordinates")
 
         upstreams = self.upstream_map()
-        # One clutter generation for every frame, so scrubbing the timeline does not
-        # make parked echoes blink in and out.
         newest = self.newest_past_unix(upstreams)
-        cache_key = f"radar:tile:v6:{newest}:{unix_time}:{z}:{x}:{y}"
+        full_key = f"radar:tile:v6:{newest}:{unix_time}:{z}:{x}:{y}"
+        fast_key = f"{FAST_TILE_CACHE_PREFIX}:{unix_time}:{z}:{x}:{y}"
+
         try:
-            cached = get_redis().get(cache_key)
+            cached = get_redis().get(full_key)
             if cached:
-                return base64.b64decode(cached)
+                return base64.b64decode(cached), "full"
         except Exception:
             pass
+
+        # If a peek mask already exists, promote to full filtered immediately
+        peek = peek_clutter_mask(newest, z, x, y) if newest is not None else None
 
         upstream_template = await self.upstream_for_frame(unix_time)
         url = (
@@ -131,7 +144,6 @@ class RadarService:
             .replace("{x}", str(x))
             .replace("{y}", str(y))
         )
-        # Raw RainViewer bytes — share across map filter + analysis when possible
         raw_cache_key = f"radar:raw:v1:{unix_time}:{z}:{x}:{y}"
         raw: bytes | None = None
         try:
@@ -154,8 +166,28 @@ class RadarService:
             except Exception:
                 pass
 
-        mask: bytes | None = None
-        if newest is not None:
+        use_fast = z >= CLUTTER_MIN_ZOOM and peek is None
+        if use_fast:
+            # Street/overzoom cold path: never await 9-frame clutter here
+            try:
+                cached_fast = get_redis().get(fast_key)
+                if cached_fast:
+                    return base64.b64decode(cached_fast), "fast"
+            except Exception:
+                pass
+            filtered = filter_tile_below_dbz(raw, clutter=None, smooth=True)
+            try:
+                get_redis().setex(
+                    fast_key,
+                    FAST_FILTERED_TILE_TTL_SECONDS,
+                    base64.b64encode(filtered).decode("ascii"),
+                )
+            except Exception:
+                pass
+            return filtered, "fast"
+
+        mask = peek
+        if mask is None and newest is not None:
             mask = await clutter_mask(
                 client=get_http_client(),
                 upstreams=upstreams,
@@ -168,13 +200,13 @@ class RadarService:
         filtered = filter_tile_below_dbz(raw, clutter=mask, smooth=True)
         try:
             get_redis().setex(
-                cache_key,
+                full_key,
                 FILTERED_TILE_TTL_SECONDS,
                 base64.b64encode(filtered).decode("ascii"),
             )
         except Exception:
             pass
-        return filtered
+        return filtered, "full"
 
     async def _fetch_rainviewer(self) -> dict[str, Any]:
         response = await get_http_client().get(RAINVIEWER_MAPS_URL, timeout=8.0)
